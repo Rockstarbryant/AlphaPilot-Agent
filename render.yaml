@@ -1,0 +1,75 @@
+databases:
+  - name: alphapilot-db
+    plan: free
+    databaseName: alphapilot
+    user: alphapilot
+
+services:
+  - type: web
+    name: alphapilot-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: alphapilot-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: APP_ENV
+        value: production
+      - key: AI_PROVIDER
+        value: openrouter
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_MODEL
+        sync: false
+      - key: BINANCE_PUBLIC_REST_BASE
+        value: https://api.binance.com
+      - key: BINANCE_MCP_ENDPOINT
+        value: https://agent.binance.com/mcp/agentic
+      - key: MCP_CLIENT_NAME
+        value: AlphaPilot Agent
+      - key: MCP_OAUTH_REDIRECT_URI
+        sync: false
+      - key: MCP_OAUTH_ENCRYPTION_KEY
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: FRONTEND_PUBLIC_URL
+        sync: false
+    healthCheckPath: /api/health
+
+  - type: web
+    name: alphapilot-mcp-server
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile.mcp
+    dockerContext: ./backend
+    plan: free
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: alphapilot-db
+          property: connectionString
+      - key: APP_ENV
+        value: production
+      - key: MCP_SERVER_HOST
+        value: "0.0.0.0"
+      - key: MCP_SERVER_PORT
+        value: "9000"
+
+  - type: worker
+    name: alphapilot-scheduler
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile.scheduler
+    dockerContext: ./backend
+    plan: free
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: alphapilot-db
+          property: connectionString
+      - key: APP_ENV
+        value: production

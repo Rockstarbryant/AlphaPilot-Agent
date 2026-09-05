@@ -1,0 +1,55 @@
+@import "tailwindcss";
+
+/*
+  AlphaPilot design tokens — a market-operations ledger, not a SaaS
+  dashboard. Flat surfaces, hairline dividers, tabular numerals for
+  every figure that could be compared at a glance. See docs/ARCHITECTURE.md
+  for the reasoning; system font stack is deliberate for this sandbox
+  build (no external font fetch available here) — swap in a licensed
+  display face via next/font in a real deploy if desired.
+*/
+:root {
+  --ink: #12151b;
+  --surface: #181d25;
+  --surface-raised: #1f2530;
+  --line: #2a303c;
+  --text: #e7e9ee;
+  --muted: #8a93a3;
+  --gold: #c9a24b;
+  --gold-dim: #8a7238;
+  --gain: #3fa66a;
+  --loss: #c2504a;
+  --watch: #4d7cac;
+}
+
+@theme inline {
+  --color-ink: var(--ink);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-line: var(--line);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-gold: var(--gold);
+  --color-gold-dim: var(--gold-dim);
+  --color-gain: var(--gain);
+  --color-loss: var(--loss);
+  --color-watch: var(--watch);
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Roboto Mono", Menlo, Consolas, monospace;
+}
+
+body {
+  background: var(--ink);
+  color: var(--text);
+  font-family: var(--font-sans);
+}
+
+.tnum {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.ledger-row + .ledger-row {
+  border-top: 1px solid var(--line);
+}

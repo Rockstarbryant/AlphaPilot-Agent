@@ -1,0 +1,8 @@
+{
+  "tests/integration/test_confirm_execution.py": true,
+  "tests/integration/test_daily_market_reset.py": true,
+  "tests/integration/test_mcp_server.py": true,
+  "tests/integration/test_strategies.py": true,
+  "tests/unit/test_market_data.py": true,
+  "tests/unit/test_risk_engine.py": true
+}

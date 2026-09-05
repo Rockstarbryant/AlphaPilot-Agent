@@ -1,0 +1,5 @@
+[
+  "tests/unit/test_path_a2_scaffold.py::test_direct_agent_os_client_exists",
+  "tests/unit/test_path_a2_scaffold.py::test_tool_arguments_fail_closed_when_required_field_missing",
+  "tests/unit/test_path_a2_scaffold.py::test_tool_arguments_follow_live_schema"
+]
