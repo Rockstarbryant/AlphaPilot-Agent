@@ -1,3 +1,5 @@
+> **Option A:** AlphaPilot is the policy/proposal workflow. Binance orders are placed by an allowlisted MCP client; AlphaPilot records fills via MCP `record_fill`.
+
 # AlphaPilot Agent Architecture
 
 ## Objective

@@ -1,118 +1,66 @@
-# Binance Agent OS Track A Demo
+# Hackathon demo script — Track A (Option A)
 
-## Demo objective
+**Narrative:** AlphaPilot is the risk and proposal layer; Binance Agent OS is the execution rail; Claude/Cursor is the authorized operator.
 
-Show a judge that AlphaPilot is an agent that can:
+## Prep (desktop)
 
-1. observe Binance market/account state;
-2. reason about an opportunity;
-3. enforce deterministic risk controls;
-4. call Binance Agent OS MCP itself;
-5. obtain the resulting order/fill state;
-6. create and monitor the resulting Position.
+1. Claude Code or Cursor installed.
+2. Binance MCP added and authenticated (`https://agent.binance.com/mcp/agentic`).
+3. AlphaPilot backend + MCP server running; AlphaPilot MCP URL added to the same client.
+4. Agentic sub-account funded with a small USDT amount you can afford to test.
+5. AlphaPilot user logged in; at least one market scan completed (`POST /api/sessions/run`).
 
-## The key sentence
+## Demo arc (5–8 minutes)
 
-> **"AlphaPilot does not generate an order for another AI client to execute. AlphaPilot is the MCP client that calls Binance Agent OS itself."**
+### 1. Problem (30s)
 
-## Recommended live flow
+"Binance only allowlists certain MCP clients for Agentic OAuth. AlphaPilot doesn't fight that — it becomes the workflow on top."
 
-### 1. Open Agent
+### 2. Discovery (1–2 min)
 
-Show:
+- Show AlphaPilot Opportunities / session after a scan.
+- Point out regime + scores + **risk_check_passed**.
+- Rejected ideas never appear on the execution list.
 
-- Binance Agent OS connection status
-- Agentic account state
-- USDT available
-- assets
-- open positions/orders
-- trading mode
+### 3. Dual MCP (1 min)
 
-### 2. Show market opportunity
-
-Run a scan and open a risk-passed candidate.
-
-### 3. Explain the decision
-
-Show AI reasoning alongside the deterministic strategy score. Emphasize that the AI does not control hard limits.
-
-### 4. Show risk gate
-
-Demonstrate:
+In the client:
 
 ```text
-Candidate
-  ↓
-AI reasoning
-  ↓
-Risk Engine ✓
-  ↓
-TradePlan
+Use wiring_instructions from AlphaPilot MCP.
 ```
 
-### 5. Execute directly
-
-Click:
-
-**Execute via Binance Agent OS**
-
-Do not switch to a separate execution client. AlphaPilot is the MCP client and must drive the Binance Agent OS workflow itself.
-
-### 6. Binance boundary
-
-If Binance asks for confirmation under the current Agent OS configuration, complete that Binance-side confirmation. Do not attempt to bypass it.
-
-### 7. Verify
-
-Show:
-
-- Binance order ID
-- submitted/filled state
-- actual fill price/quantity where returned
-- newly created AlphaPilot Position
-
-### 8. Monitor
-
-Show the Position Monitor evaluating the position independently of the LLM.
-
-## What judges should see
+Then:
 
 ```text
-              ALPHAPILOT
-                   │
-          Market observation
-                   │
-             AI reasoning
-                   │
-           Risk Engine ✓
-                   │
-              TradePlan
-                   │
-          DIRECT MCP CALL
-                   │
-                   ▼
-          BINANCE AGENT OS
-                   │
-                Binance
-                   │
-             Order / Fill
-                   │
-                   ▼
-              ALPHAPILOT
-                   │
-             Position
-                   │
-             Monitoring
+list_pending_proposals
+get_approval_brief <plan_id>
 ```
 
-## Do not demonstrate
+### 4. Approve + execute (2–3 min)
 
-- copying a TradePlan into a separate execution client;
-- manually typing a Binance order that AlphaPilot did not request;
-- manually entering an order ID back into AlphaPilot as the primary flow;
-- claiming a trade is filled when only a request was submitted;
-- claiming full portfolio valuation when only raw balances are available.
+```text
+approve_trade_plan <plan_id>
+execution_checklist <plan_id>
+```
 
-## Backup demo
+Place a **small** market order via Binance MCP tools (user confirms on Binance if prompted).
 
-If Binance authorization fails during the live demo, demonstrate the complete deterministic pipeline and the Binance connection/capability diagnostics rather than faking execution.
+```text
+record_fill <plan_id> <order_id> <fill_price> <quantity>
+```
+
+### 5. Monitor (1 min)
+
+- AlphaPilot Positions page shows the open position.
+- Explain stops / profit ladder still enforced by AlphaPilot's monitor using public prices.
+
+### 6. Close
+
+"Strategy and risk stay deterministic in AlphaPilot. Execution stays inside Binance's allowlisted Agent OS path. That's Option A."
+
+## Submission tips
+
+- GitHub: highlight `docs/ARCHITECTURE.md`, `docs/MCP_SERVER.md`, `backend/app/mcp_server.py`, `backend/app/binance/market_data.py`.
+- Video: show dual MCP tool list + one paper or tiny live fill.
+- Do **not** claim AlphaPilot completes Binance Agentic OAuth as its own client.

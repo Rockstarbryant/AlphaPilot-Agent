@@ -1,73 +1,84 @@
-# MCP Architecture
+# MCP Architecture (Option A)
 
-AlphaPilot contains **two different MCP roles**. Keeping them separate is essential.
+AlphaPilot uses **two different MCP roles**. They must not be confused.
 
-## 1. Binance MCP — external execution service
+## 1. Binance MCP — execution rail (allowlisted clients only)
 
-Endpoint:
+Endpoint: `https://agent.binance.com/mcp/agentic`
 
-`https://agent.binance.com/mcp/agentic`
+Binance’s hosted MCP server. **OAuth is completed inside a supported AI client**, not inside AlphaPilot:
 
-This is Binance's hosted MCP server. AlphaPilot acts as a client to it through:
+- Claude Code / Claude Desktop  
+- Cursor / VS Code  
+- Codex / ChatGPT  
+- Grok Bot  
 
-`backend/app/binance/agent_os_mcp_client.py`
+Self-built MCP clients (including AlphaPilot’s own OAuth attempt) currently receive:
 
-and:
+> The AI Agent you are using is not currently supported. `(3346001-…)`
 
-`backend/app/services/binance_agent_os.py`
+So AlphaPilot **does not** act as a Binance MCP OAuth client for trading.
 
-It is used for:
+## 2. AlphaPilot MCP — policy & proposal workflow
 
-- account state
-- market data where needed
-- order placement
-- order status
-- cancellation where supported
+`backend/app/mcp_server.py` (Streamable HTTP) exposes AlphaPilot-owned data and workflow tools:
 
-## 2. AlphaPilot MCP — optional application interface
+| Tool | Purpose |
+|------|---------|
+| `wiring_instructions` | How to connect dual MCP |
+| `list_pending_proposals` | Risk-validated plans |
+| `get_trade_plan` | Structured plan |
+| `get_approval_brief` | Human-readable brief |
+| `approve_trade_plan` | Mark approved (no order) |
+| `reject_trade_plan` | Cancel plan |
+| `execution_checklist` | Steps for Binance-side order |
+| `record_fill` | After Binance fill → open Position |
+| `list_open_positions` | Monitored positions |
 
-`backend/app/mcp_server.py` exposes AlphaPilot-owned data such as:
+This server is **not** Binance and never places exchange orders.
 
-- pending risk-validated proposals
-- approval briefs
-- Binance connection state
-- AlphaPilot positions
-
-This server is **not** Binance's execution server.
-
-An external MCP client may connect to AlphaPilot's application-data MCP server if desired. This is optional and is separate from AlphaPilot's direct Binance execution path.
-
-## Direct execution path
+## Option A dual-MCP flow
 
 ```text
-AlphaPilot API/UI
-      ↓
-BinanceAgentOSService
-      ↓
-BinanceAgentOSClient
-      ↓
-MCP tools/call
-      ↓
-Binance Agent OS
-      ↓
-Agentic account
+User (desktop)
+   │
+   ├─► Supported client ──OAuth──► Binance Agent OS MCP ──► Agentic sub-account
+   │         │                         (orders, account)
+   │         │
+   │         └──────────────────► AlphaPilot MCP
+   │                                   │
+   │                          proposals / approve / record_fill
+   │                                   │
+   └──────────────────────────► AlphaPilot Web UI / REST
+                                      │
+                               market scan (public REST)
+                               risk engine → TradePlan
 ```
 
-## Tool discovery
+1. Market scan + strategies + risk run in AlphaPilot (public REST).  
+2. Operator reviews plans in UI or via AlphaPilot MCP.  
+3. `approve_trade_plan`.  
+4. Supported client places order on **Binance** MCP.  
+5. `record_fill` so AlphaPilot monitors the position.
 
-AlphaPilot calls `tools/list` and stores the returned catalog in the client instance. Execution methods resolve a compatible tool from the discovered catalog and build arguments from its declared JSON schema.
+## Running AlphaPilot MCP
 
-This is deliberately safer than assuming a particular third-party tool name or request shape.
+```bash
+# env
+MCP_SERVER_HOST=0.0.0.0
+MCP_SERVER_PORT=9000
+DATABASE_URL=...
 
-## Important limitation
+python -m app.mcp_server
+# or Docker service alphapilot-mcp-server (see render.yaml)
+```
 
-The code is designed around the hosted Binance MCP protocol, but the live Binance-specific tool catalog and authorization behavior have not been executed from this development environment. The first debugging milestone is therefore a real connection followed by `tools/list` and one read-only account/market call.
+Add the Streamable HTTP URL to Claude Code / Cursor alongside Binance MCP.
 
-## Recommended debugging sequence
+## What was removed from the “happy path”
 
-1. Connect Agent OS.
-2. Call `/api/binance/connection/{user_id}`.
-3. Call `/api/binance/capabilities/{user_id}`.
-4. Confirm the returned tool names/schemas.
-5. Call `/api/binance/account/{user_id}`.
-6. Only after the above works, test a small risk-approved order.
+- AlphaPilot completing Binance Agentic OAuth as its own client  
+- Market data via Agent OS MCP without allowlisted OAuth  
+- Direct `execute_trade_plan` → Binance MCP as the only path  
+
+Legacy `BinanceAgentOSService` code may still exist for experiments; **Option A production path does not depend on it.**
