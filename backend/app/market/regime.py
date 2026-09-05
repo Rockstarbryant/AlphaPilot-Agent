@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import statistics
 from dataclasses import dataclass
+from typing import Any
 
 from app.binance.market_data import BinanceMarketDataClient, TickerSnapshot
 
@@ -25,6 +26,25 @@ class RegimeAssessment:
     market_breadth_pct: float  # % of USDT pairs that are up on the day
     btc_volatility_pct: float
     notes: str
+
+
+def _kline_close(row: Any) -> float | None:
+    """Normalize close price from REST array klines or dict-shaped rows.
+
+    Binance REST `/api/v3/klines` returns:
+      [ openTime, open, high, low, close, volume, ... ]
+    Older/MCP-shaped rows may use dicts with a ``close`` / ``c`` field.
+    """
+    try:
+        if isinstance(row, (list, tuple)) and len(row) >= 5:
+            return float(row[4])
+        if isinstance(row, dict):
+            for key in ("close", "c", "Close"):
+                if row.get(key) is not None:
+                    return float(row[key])
+    except (TypeError, ValueError, IndexError):
+        return None
+    return None
 
 
 async def assess_market_regime(client: BinanceMarketDataClient) -> RegimeAssessment:
@@ -46,10 +66,16 @@ async def assess_market_regime(client: BinanceMarketDataClient) -> RegimeAssessm
     breadth_pct = (up_count / len(usdt_tickers)) * 100
 
     klines = await client.get_klines("BTCUSDT", interval="1h", limit=24)
-    hourly_returns = [
-        (klines[i]["close"] - klines[i - 1]["close"]) / klines[i - 1]["close"] * 100
-        for i in range(1, len(klines)) if klines[i - 1]["close"]
-    ]
+    if not isinstance(klines, list):
+        klines = []
+
+    hourly_returns: list[float] = []
+    for i in range(1, len(klines)):
+        prev_close = _kline_close(klines[i - 1])
+        this_close = _kline_close(klines[i])
+        if prev_close and this_close and prev_close != 0:
+            hourly_returns.append((this_close - prev_close) / prev_close * 100)
+
     btc_volatility = statistics.pstdev(hourly_returns) if len(hourly_returns) > 1 else 0.0
 
     if btc_volatility > 6.0:
