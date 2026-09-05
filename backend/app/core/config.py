@@ -10,8 +10,29 @@ No Binance API key/secret is stored. MCP authorization credentials are encrypted
 Binance itself may still require confirmation for every write action.
 """
 from functools import lru_cache
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# asyncpg's connect() only accepts a limited set of kwargs, but SQLAlchemy
+# forwards EVERY query-string param on the URL straight into it. Supabase/
+# Neon-style connection strings (meant for psycopg/libpq) commonly include
+# `channel_binding` and `sslmode`, which asyncpg rejects with:
+#   TypeError: connect() got an unexpected keyword argument 'channel_binding'
+# Strip those out here so the same DATABASE_URL works regardless of where
+# it was copied from. Used by both app/db/base.py and alembic/env.py.
+_ASYNCPG_UNSUPPORTED_PARAMS = {"channel_binding", "sslmode", "options", "target_session_attrs"}
+
+
+def sanitize_database_url(url: str) -> str:
+    parts = urlsplit(url)
+    query_pairs = [
+        (k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+        if k not in _ASYNCPG_UNSUPPORTED_PARAMS
+    ]
+    new_query = urlencode(query_pairs)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, new_query, parts.fragment))
 
 
 class Settings(BaseSettings):
