@@ -60,7 +60,7 @@ class Settings(BaseSettings):
 
     # Binance public REST is used for scheduled market discovery. Agent OS MCP
     # is the direct authenticated account/execution boundary.
-    binance_public_rest_base: str = Field(default="https://api.binance.com")
+    binance_public_rest_base: str = Field(default="https://data-api.binance.vision")
     binance_mcp_endpoint: str = Field(default="https://agent.binance.com/mcp/agentic")
     # MCP OAuth is the standard authorization mechanism used by protected MCP
     # servers. These settings are provider-neutral; Binance controls the actual
