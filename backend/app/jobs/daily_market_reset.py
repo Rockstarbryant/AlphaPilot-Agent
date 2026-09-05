@@ -197,7 +197,13 @@ async def run_daily_market_reset(db: AsyncSession, user_id: str) -> MarketSessio
     if policy is None:
         raise RuntimeError(f"No RiskPolicy configured for user {user_id}; refusing to trade blind.")
 
-    client = BinanceMarketDataClient()
+    # Market data on Agent OS MCP requires an authorized connection (the
+    # endpoint is OAuth-protected even for "public" market-data tools).
+    from app.services.binance_agent_os import BinanceAgentOSService
+
+    svc = BinanceAgentOSService(db)
+    connection_data = await svc.connection_data(user_id)
+    client = BinanceMarketDataClient(connection=connection_data)
     engine = RiskEngine(policy)
     proposals_created = 0
     snapshot = await _get_account_snapshot(db, user_id)

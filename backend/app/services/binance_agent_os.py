@@ -117,12 +117,24 @@ class BinanceAgentOSService:
             await self.db.commit()
         return decrypt_secret(connection.access_token_encrypted)
 
-    async def client(self, user_id: str) -> BinanceAgentOSClient:
+    async def connection_data(self, user_id: str) -> BinanceConnectionData:
+        """Return a ready-to-use token payload for MCP clients (market data, trading)."""
         connection = await self.connection(user_id)
         if connection is None or connection.status != BinanceConnectionStatus.connected:
-            raise BinanceMCPAuthenticationError("Binance Agent OS is not connected. Authorize AlphaPilot first.")
+            raise BinanceMCPAuthenticationError(
+                "Binance Agent OS is not connected. Open the Agent page and complete authorization first."
+            )
         token = await self._access_token(connection)
-        return BinanceAgentOSClient(BinanceConnectionData(access_token=token, expires_at=connection.token_expires_at))
+        return BinanceConnectionData(
+            access_token=token,
+            refresh_token=decrypt_secret(connection.refresh_token_encrypted)
+            if connection.refresh_token_encrypted
+            else None,
+            expires_at=connection.token_expires_at,
+        )
+
+    async def client(self, user_id: str) -> BinanceAgentOSClient:
+        return BinanceAgentOSClient(await self.connection_data(user_id))
 
     async def capabilities(self, user_id: str) -> list[dict[str, Any]]:
         client = await self.client(user_id)

@@ -36,6 +36,8 @@ services:
         sync: false
       - key: MCP_OAUTH_ENCRYPTION_KEY
         sync: false
+      - key: MCP_CLIENT_METADATA_URL
+        sync: false
       - key: PUBLIC_BASE_URL
         sync: false
       - key: FRONTEND_PUBLIC_URL

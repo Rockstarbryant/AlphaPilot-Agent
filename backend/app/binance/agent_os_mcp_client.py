@@ -60,6 +60,7 @@ class MCPOAuthDiscovery:
     token_endpoint: str
     registration_endpoint: str | None
     scopes_supported: list[str]
+    client_id_metadata_document_supported: bool = False
 
 
 @dataclass
@@ -110,10 +111,10 @@ def decrypt_secret(value: str) -> str:
 class MCPOAuthManager:
     """Generic MCP OAuth discovery/authorization helpers.
 
-    This class intentionally knows nothing about Binance Login/OAuth. It only
-    implements the protected-MCP authorization contract: resource metadata,
-    authorization-server discovery, dynamic client registration when advertised,
-    PKCE, and token exchange. Binance owns the authorization UI and scopes.
+    Implements the protected-MCP authorization contract:
+    resource metadata, authorization-server discovery, Client ID Metadata
+    Documents (preferred) or dynamic client registration, PKCE, and token
+    exchange. Binance owns the authorization UI and scopes.
     """
 
     def __init__(self, endpoint: str = MCP_ENDPOINT):
@@ -177,6 +178,9 @@ class MCPOAuthManager:
                 token_endpoint=token_endpoint,
                 registration_endpoint=auth.get("registration_endpoint"),
                 scopes_supported=resource.get("scopes_supported") or auth.get("scopes_supported") or [],
+                client_id_metadata_document_supported=bool(
+                    auth.get("client_id_metadata_document_supported")
+                ),
             )
 
     @staticmethod
@@ -190,27 +194,54 @@ class MCPOAuthManager:
         return raw or None
 
     async def begin(self, *, user_id: str, redirect_uri: str) -> dict[str, str | None]:
+        """Start MCP OAuth authorization-code + PKCE.
+
+        Preference order (MCP 2025-11-25 / Binance Agent OS):
+          1. Client ID Metadata Document (CIMD) when the AS advertises
+             ``client_id_metadata_document_supported: true`` — client_id is an
+             HTTPS URL pointing at our public metadata JSON.
+          2. Dynamic Client Registration when ``registration_endpoint`` is set.
+          3. Fail with a clear error (manual pre-registration not implemented).
+        """
         discovery = await self.discover()
-        if not discovery.registration_endpoint:
-            raise BinanceMCPAuthenticationError(
-                "MCP authorization server did not advertise dynamic client registration."
-            )
+        client_id: str | None = None
 
-        metadata = {
-            "client_name": settings.mcp_client_name,
-            "redirect_uris": [redirect_uri],
-            "grant_types": ["authorization_code", "refresh_token"],
-            "response_types": ["code"],
-            "token_endpoint_auth_method": "none",
-        }
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            registration = await client.post(discovery.registration_endpoint, json=metadata)
-            registration.raise_for_status()
-            client_info = registration.json()
+        # 1) Client ID Metadata Document (what Binance Agent OS uses)
+        if discovery.client_id_metadata_document_supported or settings.mcp_client_metadata_url:
+            client_id = (settings.mcp_client_metadata_url or "").strip() or None
+            if not client_id:
+                # Derive a stable public URL from PUBLIC_BASE_URL when not set explicitly.
+                base = (settings.public_base_url or "").rstrip("/")
+                if base.startswith("https://"):
+                    client_id = f"{base}/.well-known/oauth-client-metadata.json"
+            if client_id and not client_id.startswith("https://"):
+                raise BinanceMCPAuthenticationError(
+                    "MCP_CLIENT_METADATA_URL must be an https URL with a path "
+                    "(Client ID Metadata Document requirement)."
+                )
 
-        client_id = client_info.get("client_id")
+        # 2) Dynamic Client Registration fallback
+        if not client_id and discovery.registration_endpoint:
+            metadata = {
+                "client_name": settings.mcp_client_name,
+                "redirect_uris": [redirect_uri],
+                "grant_types": ["authorization_code", "refresh_token"],
+                "response_types": ["code"],
+                "token_endpoint_auth_method": "none",
+            }
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                registration = await client.post(discovery.registration_endpoint, json=metadata)
+                registration.raise_for_status()
+                client_info = registration.json()
+            client_id = client_info.get("client_id")
+            if not client_id:
+                raise BinanceMCPAuthenticationError("MCP dynamic registration returned no client_id.")
+
         if not client_id:
-            raise BinanceMCPAuthenticationError("MCP dynamic registration returned no client_id.")
+            raise BinanceMCPAuthenticationError(
+                "MCP authorization server requires Client ID Metadata Document "
+                "(set MCP_CLIENT_METADATA_URL / PUBLIC_BASE_URL) or dynamic client registration."
+            )
 
         verifier = _pkce_verifier()
         params = {
@@ -381,13 +412,13 @@ class BinanceAgentOSClient:
         tool = self._resolve_tool("get_ticker", "ticker", "price")
         return await self.call_tool(tool.name, self._arguments_for(tool, symbol=symbol))
 
-    # --- Market data (public scope, no OAuth/connection required) ---------
-    # Binance's Agent OS docs list "Market data (public, no auth) — tickers,
-    # order books, candles, funding" as an unauthenticated scope. Exact tool
-    # names aren't published, so we try a handful of likely candidates and
-    # fall back to substring matching via _resolve_tool. If none match, the
-    # raised BinanceMCPToolError lists every tool the server actually
-    # advertises — use that to correct the candidate list below.
+    # --- Market data tools -------------------------------------------------
+    # Docs call market data a "public" *scope* (no trading API key), but the
+    # hosted MCP endpoint is still OAuth-protected: initialize / tools/list /
+    # tools/call all need a Bearer token. Exact tool names aren't published,
+    # so we try likely candidates and fall back to substring matching via
+    # _resolve_tool. If none match, BinanceMCPToolError lists every tool the
+    # server advertises — use that to correct the candidate list below.
 
     async def get_24h_tickers(self) -> Any:
         await self._ensure_initialized()

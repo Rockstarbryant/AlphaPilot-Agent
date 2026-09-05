@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
@@ -37,3 +38,44 @@ app.include_router(notifications.router, prefix="/api/notifications", tags=["not
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "env": settings.app_env}
+
+
+def _oauth_client_metadata() -> dict:
+    """OAuth Client ID Metadata Document (CIMD) for Binance Agent OS MCP.
+
+    Binance advertises ``client_id_metadata_document_supported: true`` and does
+    not expose a dynamic-registration endpoint. The ``client_id`` used in the
+    authorize request is this document's public HTTPS URL.
+    """
+    base = (settings.public_base_url or "").rstrip("/")
+    metadata_url = (settings.mcp_client_metadata_url or "").strip()
+    if not metadata_url:
+        metadata_url = f"{base}/.well-known/oauth-client-metadata.json"
+    redirect = settings.mcp_oauth_redirect_uri
+    return {
+        "client_id": metadata_url,
+        "client_name": settings.mcp_client_name or "AlphaPilot Agent",
+        "client_uri": base or None,
+        "redirect_uris": [redirect] if redirect else [],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+        "token_endpoint_auth_method": "none",
+        "application_type": "web",
+    }
+
+
+@app.get("/.well-known/oauth-client-metadata.json")
+async def oauth_client_metadata():
+    return JSONResponse(
+        content=_oauth_client_metadata(),
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
+# Alias so either path works if MCP_CLIENT_METADATA_URL is customized.
+@app.get("/oauth/client-metadata.json")
+async def oauth_client_metadata_alias():
+    return JSONResponse(
+        content=_oauth_client_metadata(),
+        headers={"Cache-Control": "public, max-age=3600"},
+    )

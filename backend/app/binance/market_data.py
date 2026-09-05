@@ -1,15 +1,14 @@
 """
 Binance Agent OS MCP market data adapter.
 
-Market data is a *public, no-auth* scope on Binance's hosted Agent OS MCP
-server (tickers, order books, candles, funding — see
-https://developers.binance.com/en/docs/agent-native/mcp-server/agentic).
-That means AlphaPilot can call it directly with no OAuth/connection at all —
-no dynamic client registration, no per-user authorization.
+Market-data *tools* are documented as a public scope (no trading key), but
+the hosted MCP transport itself is OAuth-protected. Every call — including
+``initialize`` and ``tools/list`` — needs a Bearer token from the MCP OAuth
+flow. Pass the user's ``BinanceConnectionData`` into this client.
 
 This class is a drop-in replacement for the old direct-REST client: same
-class name, same method names, same return shapes. Callers (regime engine,
-daily market reset job, position monitor) do not need to change.
+class name, same method names, same return shapes. Callers only need to
+supply the connection.
 
 Binance's tool schema for market data isn't publicly documented in detail,
 so BinanceAgentOSClient tries several likely tool-name candidates and falls
@@ -22,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from app.binance.agent_os_mcp_client import BinanceAgentOSClient
+from app.binance.agent_os_mcp_client import BinanceAgentOSClient, BinanceConnectionData
 
 MAX_DATA_AGE_SECONDS = 30
 
@@ -49,8 +48,15 @@ class StaleMarketDataError(RuntimeError):
 
 
 class BinanceMarketDataClient:
-    def __init__(self):
-        self._client = BinanceAgentOSClient()
+    """Market-data adapter over Binance Agent OS MCP.
+
+    The hosted MCP endpoint is OAuth-protected even for market-data tools.
+    Pass a ``BinanceConnectionData`` (from the user's authorized connection)
+    so initialize / tools/list / tools/call succeed.
+    """
+
+    def __init__(self, connection: BinanceConnectionData | None = None):
+        self._client = BinanceAgentOSClient(connection=connection)
 
     async def close(self):
         # BinanceAgentOSClient opens a fresh httpx.AsyncClient per RPC call
