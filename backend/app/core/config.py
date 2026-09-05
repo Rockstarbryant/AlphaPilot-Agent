@@ -10,8 +10,36 @@ No Binance API key/secret is stored. MCP authorization credentials are encrypted
 Binance itself may still require confirmation for every write action.
 """
 from functools import lru_cache
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# asyncpg rejects some query params that appear on managed-Postgres URLs
+# (Supabase / Neon / Render copies of libpq-style DSNs).
+_ASYNCPG_UNSUPPORTED_PARAMS = {
+    "channel_binding",
+    "sslmode",
+    "options",
+    "target_session_attrs",
+}
+
+
+def sanitize_database_url(url: str) -> str:
+    """Strip libpq-only query params so asyncpg can connect.
+
+    Used by ``app.db.base`` (and alembic env) so the same DATABASE_URL works
+    whether it was copied from a psycopg/libpq UI or written for asyncpg.
+    """
+    parts = urlsplit(url)
+    query_pairs = [
+        (k, v)
+        for k, v in parse_qsl(parts.query, keep_blank_values=True)
+        if k not in _ASYNCPG_UNSUPPORTED_PARAMS
+    ]
+    return urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urlencode(query_pairs), parts.fragment)
+    )
 
 
 class Settings(BaseSettings):
