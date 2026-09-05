@@ -381,6 +381,41 @@ class BinanceAgentOSClient:
         tool = self._resolve_tool("get_ticker", "ticker", "price")
         return await self.call_tool(tool.name, self._arguments_for(tool, symbol=symbol))
 
+    # --- Market data (public scope, no OAuth/connection required) ---------
+    # Binance's Agent OS docs list "Market data (public, no auth) — tickers,
+    # order books, candles, funding" as an unauthenticated scope. Exact tool
+    # names aren't published, so we try a handful of likely candidates and
+    # fall back to substring matching via _resolve_tool. If none match, the
+    # raised BinanceMCPToolError lists every tool the server actually
+    # advertises — use that to correct the candidate list below.
+
+    async def get_24h_tickers(self) -> Any:
+        await self._ensure_initialized()
+        tool = self._resolve_tool(
+            "get_24hr_tickers", "get_24h_tickers", "ticker_24hr", "get_all_tickers",
+            "market_tickers", "get_market_overview", "tickers",
+        )
+        return await self.call_tool(tool.name, self._arguments_for(tool))
+
+    async def get_exchange_info(self) -> Any:
+        await self._ensure_initialized()
+        tool = self._resolve_tool(
+            "get_exchange_info", "exchange_info", "get_symbols", "list_symbols", "get_markets",
+        )
+        return await self.call_tool(tool.name, self._arguments_for(tool))
+
+    async def get_order_book(self, symbol: str, limit: int = 5) -> Any:
+        await self._ensure_initialized()
+        tool = self._resolve_tool("get_order_book", "get_depth", "order_book", "depth")
+        return await self.call_tool(tool.name, self._arguments_for(tool, symbol=symbol, limit=limit))
+
+    async def get_klines(self, symbol: str, interval: str = "1h", limit: int = 24) -> Any:
+        await self._ensure_initialized()
+        tool = self._resolve_tool("get_klines", "get_candles", "klines", "candles", "get_candlesticks")
+        return await self.call_tool(
+            tool.name, self._arguments_for(tool, symbol=symbol, interval=interval, limit=limit)
+        )
+
     async def get_account_state(self) -> Any:
         await self._ensure_initialized()
         tool = self._resolve_tool("get_balance", "get_portfolio", "get_account", "account_balance", "balance")

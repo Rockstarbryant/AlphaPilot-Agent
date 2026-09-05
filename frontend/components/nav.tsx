@@ -53,17 +53,16 @@ export function SideNav() {
 
 export function MobileNav() {
   const pathname = usePathname();
-  const primary = NAV.slice(0, 5);
   return (
-    <nav className="md:hidden fixed bottom-0 left-0 right-0 border-t border-line bg-surface flex z-20">
-      {primary.map(({ href, label, icon: Icon }) => {
+    <nav className="md:hidden fixed bottom-0 left-0 right-0 border-t border-line bg-surface flex overflow-x-auto z-20">
+      {NAV.map(({ href, label, icon: Icon }) => {
         const active = pathname?.startsWith(href);
         return (
           <Link
             key={href}
             href={href}
             className={clsx(
-              "flex-1 flex flex-col items-center gap-0.5 py-2.5 text-[10px]",
+              "flex-shrink-0 basis-1/5 flex flex-col items-center gap-0.5 py-2.5 text-[10px]",
               active ? "text-gold" : "text-muted"
             )}
           >

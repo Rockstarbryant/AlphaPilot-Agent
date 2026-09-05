@@ -1,26 +1,28 @@
 """
-Binance public Spot market data — no API key, no Agent OS session required.
-Endpoints verified against Binance's public REST API (api.binance.com):
-  GET /api/v3/ticker/24hr        - 24h stats for all symbols
-  GET /api/v3/exchangeInfo       - tradeable symbols, filters
-  GET /api/v3/depth              - order book (for spread calc)
-  GET /api/v3/klines             - candlesticks
+Binance Agent OS MCP market data adapter.
 
-This module is the public REST market-data adapter used by the scheduler.
-It never places orders and never needs credentials. Direct Binance Agent OS
-account/trading calls live in agent_os_mcp_client.py and binance_agent_os.py.
+Market data is a *public, no-auth* scope on Binance's hosted Agent OS MCP
+server (tickers, order books, candles, funding — see
+https://developers.binance.com/en/docs/agent-native/mcp-server/agentic).
+That means AlphaPilot can call it directly with no OAuth/connection at all —
+no dynamic client registration, no per-user authorization.
+
+This class is a drop-in replacement for the old direct-REST client: same
+class name, same method names, same return shapes. Callers (regime engine,
+daily market reset job, position monitor) do not need to change.
+
+Binance's tool schema for market data isn't publicly documented in detail,
+so BinanceAgentOSClient tries several likely tool-name candidates and falls
+back to substring matching. If a call fails with "Required Binance
+capability not exposed...", the error lists every tool the server actually
+advertises — use that to correct the candidate list in agent_os_mcp_client.py.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential_jitter
-
-from app.core.config import get_settings
-
-settings = get_settings()
+from app.binance.agent_os_mcp_client import BinanceAgentOSClient
 
 MAX_DATA_AGE_SECONDS = 30
 
@@ -47,58 +49,63 @@ class StaleMarketDataError(RuntimeError):
 
 
 class BinanceMarketDataClient:
-    def __init__(self, base_url: str | None = None):
-        self.base_url = base_url or settings.binance_public_rest_base
-        self._client = httpx.AsyncClient(base_url=self.base_url, timeout=10.0)
+    def __init__(self):
+        self._client = BinanceAgentOSClient()
 
     async def close(self):
-        await self._client.aclose()
+        # BinanceAgentOSClient opens a fresh httpx.AsyncClient per RPC call
+        # and closes it itself; nothing persistent to tear down here. Kept
+        # so existing `await client.close()` call sites keep working.
+        pass
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential_jitter(initial=0.5, max=5))
-    async def _get(self, path: str, params: dict | None = None) -> dict | list:
-        resp = await self._client.get(path, params=params or {})
-        if resp.status_code == 429 or resp.status_code == 418:
-            # Binance rate-limit / IP-ban signal — let tenacity back off and retry.
-            resp.raise_for_status()
-        resp.raise_for_status()
-        return resp.json()
+    @staticmethod
+    def _rows(raw) -> list[dict]:
+        """MCP tool results may be a bare list or wrapped in a dict — handle both."""
+        if isinstance(raw, list):
+            return raw
+        if isinstance(raw, dict):
+            for key in ("tickers", "symbols", "data", "result", "items"):
+                if isinstance(raw.get(key), list):
+                    return raw[key]
+        return []
 
     async def get_24h_tickers(self) -> list[TickerSnapshot]:
-        """All symbols' 24h stats in a single call (weight-efficient)."""
-        raw = await self._get("/api/v3/ticker/24hr")
+        """All symbols' 24h stats."""
+        raw = await self._client.get_24h_tickers()
         now = datetime.now(timezone.utc)
         out = []
-        for row in raw:
+        for row in self._rows(raw):
             try:
                 out.append(
                     TickerSnapshot(
                         symbol=row["symbol"],
-                        last_price=float(row["lastPrice"]),
-                        price_change_pct_24h=float(row["priceChangePercent"]),
-                        quote_volume_24h=float(row["quoteVolume"]),
+                        last_price=float(row.get("lastPrice", row.get("last_price"))),
+                        price_change_pct_24h=float(
+                            row.get("priceChangePercent", row.get("price_change_percent"))
+                        ),
+                        quote_volume_24h=float(row.get("quoteVolume", row.get("quote_volume", 0)) or 0),
                         fetched_at=now,
                     )
                 )
-            except (KeyError, ValueError):
+            except (KeyError, TypeError, ValueError):
                 continue  # skip malformed rows rather than failing the whole scan
         return out
 
     async def get_exchange_info_symbols(self, quote_asset: str = "USDT") -> set[str]:
         """Tradeable symbols against a quote asset, excluding non-SPOT / halted."""
-        raw = await self._get("/api/v3/exchangeInfo")
+        raw = await self._client.get_exchange_info()
         symbols = set()
-        for s in raw.get("symbols", []):
-            if (
-                s.get("status") == "TRADING"
-                and s.get("quoteAsset") == quote_asset
-                and s.get("isSpotTradingAllowed", True)
-            ):
+        for s in self._rows(raw):
+            status = s.get("status", "TRADING")
+            quote = s.get("quoteAsset", s.get("quote_asset"))
+            spot_allowed = s.get("isSpotTradingAllowed", s.get("is_spot_trading_allowed", True))
+            if status == "TRADING" and quote == quote_asset and spot_allowed and s.get("symbol"):
                 symbols.add(s["symbol"])
         return symbols
 
     async def get_spread_bps(self, symbol: str) -> float | None:
         """Best bid/ask spread in basis points from the order book top level."""
-        raw = await self._get("/api/v3/depth", params={"symbol": symbol, "limit": 5})
+        raw = await self._client.get_order_book(symbol, limit=5)
         bids, asks = raw.get("bids"), raw.get("asks")
         if not bids or not asks:
             return None
@@ -109,17 +116,29 @@ class BinanceMarketDataClient:
         return ((best_ask - best_bid) / mid) * 10_000
 
     async def get_klines(self, symbol: str, interval: str = "1h", limit: int = 24) -> list[dict]:
-        raw = await self._get(
-            "/api/v3/klines", params={"symbol": symbol, "interval": interval, "limit": limit}
-        )
-        return [
-            {
-                "open_time": row[0],
-                "open": float(row[1]),
-                "high": float(row[2]),
-                "low": float(row[3]),
-                "close": float(row[4]),
-                "volume": float(row[5]),
-            }
-            for row in raw
-        ]
+        raw = await self._client.get_klines(symbol, interval=interval, limit=limit)
+        out = []
+        for row in self._rows(raw) or (raw if isinstance(raw, list) else []):
+            if isinstance(row, list):
+                out.append(
+                    {
+                        "open_time": row[0],
+                        "open": float(row[1]),
+                        "high": float(row[2]),
+                        "low": float(row[3]),
+                        "close": float(row[4]),
+                        "volume": float(row[5]),
+                    }
+                )
+            elif isinstance(row, dict):
+                out.append(
+                    {
+                        "open_time": row.get("openTime", row.get("open_time")),
+                        "open": float(row["open"]),
+                        "high": float(row["high"]),
+                        "low": float(row["low"]),
+                        "close": float(row["close"]),
+                        "volume": float(row.get("volume", 0) or 0),
+                    }
+                )
+        return out

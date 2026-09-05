@@ -6,11 +6,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.base import get_db
 from app.models.models import BinanceConnectionStatus
 from app.services.binance_agent_os import BinanceAgentOSService
+from app.binance.agent_os_mcp_client import BinanceAgentOSClient
 from app.core.config import get_settings
 
 settings = get_settings()
 
 router = APIRouter()
+
+
+@router.get("/mcp/public-tools")
+async def public_mcp_tools(current_user=Depends(get_current_user)):
+    """Diagnostic: list the tools Binance's Agent OS MCP server advertises
+    with no auth/connection. Binance doesn't publish exact tool names for
+    the public market-data scope, so use this to confirm or correct the
+    candidate names in agent_os_mcp_client.py."""
+    try:
+        client = BinanceAgentOSClient()
+        await client.initialize()
+        tools = await client.list_tools()
+        return {"tools": [{"name": t.name, "description": t.description} for t in tools]}
+    except Exception as exc:
+        raise HTTPException(502, str(exc)) from exc
 
 
 @router.get("/connection/{user_id}")
