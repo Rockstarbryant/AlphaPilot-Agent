@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { RefreshCw, WalletCards } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, AccountContext } from "@/lib/api";
 import { Panel, Stat, StatusPill, Button, EmptyState } from "@/components/ui";
 
 export type AccountBalance = {
@@ -56,10 +56,13 @@ function collectItems(value: unknown, keys: string[]): unknown[] {
   return [];
 }
 
+// AlphaPilot cannot read Binance Agent OS itself (it's not on Binance's
+// agent allowlist — see BINANCE_AGENT_OS_REFACTOR.md). This panel shows the
+// account state most recently REPORTED by whichever AI client the user is
+// chatting with (via submit_account_context), not a live read.
 export function AccountState({ userId, compact = false }: { userId: string | null; compact?: boolean }) {
-  const [raw, setRaw] = useState<any>(null);
+  const [context, setContext] = useState<AccountContext | null>(null);
   const [loading, setLoading] = useState(false);
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -67,11 +70,10 @@ export function AccountState({ userId, compact = false }: { userId: string | nul
     setLoading(true);
     setError(null);
     try {
-      const account = await api.getBinanceAccount(userId);
-      setRaw(account);
-      setLastUpdated(new Date());
+      const result = await api.getAccountContext(userId);
+      setContext(result.status === "none_reported" ? null : result);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not read Binance Agent OS account state.");
+      setError(e instanceof Error ? e.message : "Could not load reported account context.");
     } finally {
       setLoading(false);
     }
@@ -79,17 +81,20 @@ export function AccountState({ userId, compact = false }: { userId: string | nul
 
   useEffect(() => { refresh(); }, [refresh]);
 
+  const raw = context?.raw_snapshot ?? null;
   const balances = useMemo(() => collectBalances(raw).filter((b) => b.total !== 0).sort((a, b) => b.total - a.total), [raw]);
   const positions = useMemo(() => collectItems(raw, ["positions", "openPositions"]), [raw]);
   const orders = useMemo(() => collectItems(raw, ["orders", "openOrders"]), [raw]);
   const usdt = balances.find((b) => b.asset === "USDT");
-  const portfolioValue = numberValue(raw?.portfolio_value_usdt ?? raw?.portfolioValueUsdt ?? raw?.totalPortfolioValue);
 
   if (!userId) return null;
 
+  const reportedAt = context?.reported_at ? new Date(context.reported_at) : null;
+  const ageMinutes = reportedAt ? (Date.now() - reportedAt.getTime()) / 60000 : null;
+
   return (
     <Panel
-      title="Binance Agentic account"
+      title="Reported Binance account context"
       action={
         <Button variant="ghost" onClick={refresh} disabled={loading}>
           <span className="flex items-center gap-1.5"><RefreshCw size={13} className={loading ? "animate-spin" : ""} />{loading ? "Refreshing…" : "Refresh"}</span>
@@ -99,23 +104,23 @@ export function AccountState({ userId, compact = false }: { userId: string | nul
       <div className="px-4 py-4 space-y-4">
         {error ? (
           <div className="border border-loss/40 bg-loss/5 rounded-sm p-3 text-xs text-loss">{error}</div>
-        ) : !raw && loading ? (
-          <EmptyState message="Reading account state from Binance Agent OS…" />
-        ) : !raw ? (
-          <EmptyState message="No account state available yet. Connect Binance Agent OS first." />
+        ) : !context && loading ? (
+          <EmptyState message="Loading last reported account context…" />
+        ) : !context ? (
+          <EmptyState message="No account context reported yet. Ask your connected AI client (with Binance Agent OS access) to read your balance and call submit_account_context — see the Agent page for setup." />
         ) : (
           <>
             <div className={`grid ${compact ? "grid-cols-2" : "grid-cols-2 md:grid-cols-4"} gap-4`}>
-              <Stat label="Portfolio value" value={portfolioValue !== null ? `$${portfolioValue.toFixed(2)}` : "—"} sub="reported by Agent OS" />
+              <Stat label="Portfolio value" value={context.portfolio_value_usdt !== undefined ? `$${context.portfolio_value_usdt.toFixed(2)}` : "—"} sub="as last reported" />
               <Stat label="USDT available" value={`$${(usdt?.free ?? 0).toFixed(2)}`} />
-              <Stat label="USDT total" value={`$${(usdt?.total ?? 0).toFixed(2)}`} />
-              <Stat label="Assets" value={String(balances.length)} />
+              <Stat label="Open exposure" value={`$${(context.open_exposure_usdt ?? 0).toFixed(2)}`} />
+              <Stat label="Margin exposure" value={`$${(context.margin_exposure_usdt ?? 0).toFixed(2)}`} />
               <Stat label="Open positions" value={String(positions.length)} />
             </div>
 
             {balances.length > 0 && (
               <div className="border border-line rounded-sm overflow-hidden">
-                <div className="px-3 py-2 border-b border-line text-xs text-muted flex items-center gap-2"><WalletCards size={13} />Balances returned by Agent OS</div>
+                <div className="px-3 py-2 border-b border-line text-xs text-muted flex items-center gap-2"><WalletCards size={13} />Balances included in the reported snapshot</div>
                 {balances.slice(0, compact ? 4 : 8).map((balance) => (
                   <div key={balance.asset} className="ledger-row px-3 py-2.5 flex items-center justify-between text-sm">
                     <span className="tnum font-medium">{balance.asset}</span>
@@ -129,9 +134,11 @@ export function AccountState({ userId, compact = false }: { userId: string | nul
             )}
 
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
-              <StatusPill tone="gain">live Agent OS state</StatusPill>
+              <StatusPill tone={ageMinutes !== null && ageMinutes > 10 ? "loss" : "gain"}>
+                {ageMinutes !== null && ageMinutes > 10 ? "stale — re-report before sizing a trade" : "fresh"}
+              </StatusPill>
               {orders.length > 0 && <StatusPill tone="watch">{orders.length} open orders</StatusPill>}
-              {lastUpdated && <span>read {lastUpdated.toLocaleTimeString()}</span>}
+              {reportedAt && <span>reported {reportedAt.toLocaleTimeString()}</span>}
             </div>
           </>
         )}

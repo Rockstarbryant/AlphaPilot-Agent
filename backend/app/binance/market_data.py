@@ -6,9 +6,12 @@ Endpoints verified against Binance's public REST API (api.binance.com):
   GET /api/v3/depth              - order book (for spread calc)
   GET /api/v3/klines             - candlesticks
 
-This module is the public REST market-data adapter used by the scheduler.
-It never places orders and never needs credentials. Direct Binance Agent OS
-account/trading calls live in agent_os_mcp_client.py and binance_agent_os.py.
+This module is the public REST market-data adapter used by the scheduler,
+app/market/coin_analysis.py, app/margin/analysis.py, and the position
+monitor. It never places orders and never needs credentials. AlphaPilot
+holds no direct Binance Agent OS connection at all — account/trading state
+only ever arrives via app/services/account_context.py, reported by an
+allowlisted AI client (see BINANCE_AGENT_OS_REFACTOR.md).
 """
 from __future__ import annotations
 

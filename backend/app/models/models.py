@@ -35,6 +35,7 @@ class StrategyType(str, PyEnum):
     recovery_hunter = "recovery_hunter"
     hot_market_margin = "hot_market_margin"
     capital_optimizer = "capital_optimizer"
+    user_requested = "user_requested"  # ad-hoc chat-driven analysis/proposal, not a scheduled scan
 
 
 class CandidateStatus(str, PyEnum):
@@ -60,39 +61,6 @@ class TradePlanStatus(str, PyEnum):
 
 
 
-
-class BinanceConnectionStatus(str, PyEnum):
-    pending = "pending"
-    connected = "connected"
-    revoked = "revoked"
-    error = "error"
-
-
-class BinanceConnection(Base):
-    """Per-user protected MCP connection to Binance Agent OS.
-
-    Binance performs the interactive authorization through the MCP connection.
-    AlphaPilot stores only the resulting MCP OAuth material, encrypted at rest,
-    so it can act as the MCP client for subsequent account/data/tool calls.
-    """
-    __tablename__ = "binance_connections"
-
-    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
-    status: Mapped[BinanceConnectionStatus] = mapped_column(
-        Enum(BinanceConnectionStatus), default=BinanceConnectionStatus.pending
-    )
-    client_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    access_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
-    refresh_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
-    token_endpoint: Mapped[str | None] = mapped_column(Text, nullable=True)
-    token_expires_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    oauth_state: Mapped[str | None] = mapped_column(String, nullable=True)
-    code_verifier_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
-    redirect_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
-    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 class User(Base):
     __tablename__ = "users"
@@ -245,11 +213,13 @@ class PositionStatus(str, PyEnum):
 
 class Position(Base):
     """
-    Created once a TradePlan's Binance Agent OS execution is confirmed. The
-    position monitor job
-    watches this against live prices for stop-loss / profit-ladder / recovery
-    exit / stagnation conditions — all deterministic, independent of whether
-    the AI/agent loop is even running (see docs/RISK_ENGINE.md).
+    Created once a TradePlan's Binance Agent OS execution is confirmed
+    (see POST /api/trade-plans/{id}/confirm-execution or the MCP tool
+    record_fill — AlphaPilot never places the order itself). The position
+    monitor job watches this against live prices for stop-loss /
+    profit-ladder / recovery-exit / stagnation conditions — all
+    deterministic, independent of whether an AI client is even connected
+    (see docs/RISK_ENGINE.md).
     """
     __tablename__ = "positions"
 
@@ -279,9 +249,11 @@ class Position(Base):
 
 class ExitSignal(Base):
     """
-    A deterministic exit condition detected by the Position Monitor. When
-    execution is enabled, AlphaPilot routes it through its direct Binance
-    Agent OS execution service.
+    A deterministic exit condition detected by the Position Monitor.
+    AlphaPilot never executes it — it surfaces the signal (and, on request,
+    an explanation via app/services/panic_advisor.py) for the human or their
+    connected AI client to act on through Binance Agent OS MCP directly,
+    then confirm via POST /exit-signals/{id}/confirm-execution.
     """
     __tablename__ = "exit_signals"
 
@@ -320,9 +292,12 @@ class EarnRecommendation(Base):
 
 class AccountSnapshot(Base):
     """
-    Portfolio-relative risk checks need authenticated Binance Agent OS account
-    state. AlphaPilot can persist a conservative snapshot from its direct MCP
-    account read. Full portfolio valuation is not inferred from raw quantities.
+    Portfolio-relative risk checks need Binance Agent OS account state.
+    AlphaPilot cannot read this itself (it is not an allowlisted Binance
+    Agent OS MCP client — see BINANCE_AGENT_OS_REFACTOR.md), so every
+    snapshot here is *reported* by whichever AI client the user is chatting
+    with, after that client reads the real numbers from Binance Agent OS.
+    See app/services/account_context.py.
     """
     __tablename__ = "account_snapshots"
 
@@ -333,7 +308,8 @@ class AccountSnapshot(Base):
     open_exposure_usdt: Mapped[float] = mapped_column(Float, default=0.0)
     margin_exposure_usdt: Mapped[float] = mapped_column(Float, default=0.0)
     realized_daily_loss_pct: Mapped[float] = mapped_column(Float, default=0.0)
-    source: Mapped[str] = mapped_column(String, default="manual")  # manual | agent_os_mcp
+    source: Mapped[str] = mapped_column(String, default="manual")  # manual | mcp_client_reported
+    raw_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)  # full balances/positions payload as reported
 
 
 class Notification(Base):

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  LayoutDashboard, TrendingUp, Wallet, ShieldAlert, Bot, Activity, Landmark, PiggyBank, Settings,
+  LayoutDashboard, TrendingUp, Wallet, ShieldAlert, Bot, Activity, Landmark, PiggyBank, Settings, MessageSquare,
 } from "lucide-react";
 import clsx from "clsx";
 
@@ -13,6 +13,7 @@ const NAV = [
   { href: "/positions", label: "Positions", icon: Wallet },
   { href: "/margin", label: "Margin", icon: ShieldAlert },
   { href: "/earn", label: "Earn", icon: PiggyBank },
+  { href: "/copilot", label: "Copilot", icon: MessageSquare },
   { href: "/agent", label: "Agent", icon: Bot },
   { href: "/activity", label: "Activity", icon: Activity },
   { href: "/risk", label: "Risk", icon: Landmark },

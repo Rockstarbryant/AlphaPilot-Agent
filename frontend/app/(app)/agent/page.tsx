@@ -2,8 +2,8 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { api, TradePlan, AgentConfig, BinanceConnection } from "@/lib/api";
-import { Panel, StatusPill, Button, EmptyState } from "@/components/ui";
+import { api, TradePlan, AgentConfig, AccountContext } from "@/lib/api";
+import { Panel, StatusPill, Button, EmptyState, TextInput } from "@/components/ui";
 import { AccountState } from "@/components/account-state";
 import { useUserId } from "@/lib/use-user";
 
@@ -15,50 +15,66 @@ function AgentPageInner() {
   const userId = useUserId();
   const searchParams = useSearchParams();
   const highlightedPlanId = searchParams.get("plan");
-  const binanceResult = searchParams.get("binance");
   const [config, setConfig] = useState<AgentConfig | null>(null);
-  const [connection, setConnection] = useState<BinanceConnection | null>(null);
+  const [context, setContext] = useState<AccountContext | null>(null);
   const [plans, setPlans] = useState<TradePlan[]>([]);
   const [busyPlan, setBusyPlan] = useState<string | null>(null);
   const [message, setMessage] = useState<string>("");
+
+  // Manual account-context form — for when there's no AI client wired up yet.
+  const [portfolioValue, setPortfolioValue] = useState("");
+  const [openExposure, setOpenExposure] = useState("");
+  const [marginExposure, setMarginExposure] = useState("");
+  const [submittingContext, setSubmittingContext] = useState(false);
+
+  // Confirm-execution form state, keyed by plan id.
+  const [confirmForms, setConfirmForms] = useState<Record<string, { orderId: string; fillPrice: string }>>({});
 
   async function load() {
     const proposed = await api.listTradePlans();
     setPlans(proposed.filter((p) => ["proposed", "approved", "submitting"].includes(p.status)));
     if (userId) {
       setConfig(await api.getAgentConfig(userId));
-      setConnection(await api.getBinanceConnection(userId));
+      const acct = await api.getAccountContext(userId);
+      setContext(acct.status === "none_reported" ? null : acct);
     }
   }
 
   useEffect(() => { load(); }, [userId]);
 
-  useEffect(() => {
-    if (binanceResult === "connected") setMessage("Binance Agent OS authorization completed.");
-    if (binanceResult === "error") setMessage("Binance Agent OS authorization was not completed.");
-  }, [binanceResult]);
-
-  async function connectBinance() {
-    if (!userId) return;
+  async function submitContext() {
+    if (!userId || !portfolioValue) return;
+    setSubmittingContext(true);
     setMessage("");
     try {
-      const { authorization_url } = await api.connectBinance(userId);
-      window.location.href = authorization_url;
+      await api.submitAccountContext(userId, {
+        portfolio_value_usdt: Number(portfolioValue),
+        open_exposure_usdt: openExposure ? Number(openExposure) : 0,
+        margin_exposure_usdt: marginExposure ? Number(marginExposure) : 0,
+      });
+      setMessage("Account context saved.");
+      await load();
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : "Could not start Binance authorization.");
+      setMessage(e instanceof Error ? e.message : "Could not save account context.");
+    } finally {
+      setSubmittingContext(false);
     }
   }
 
-  async function execute(planId: string) {
+  async function confirmExecuted(planId: string) {
+    const form = confirmForms[planId];
+    if (!form?.orderId) {
+      setMessage("Enter the Binance order id first.");
+      return;
+    }
     setBusyPlan(planId);
     setMessage("");
     try {
-      const result = await api.executeTradePlan(planId);
-      setMessage(`Binance Agent OS: ${result.status}${result.order_id ? ` — order ${result.order_id}` : ""}`);
+      await api.confirmExecution(planId, form.orderId, form.fillPrice ? Number(form.fillPrice) : undefined);
+      setMessage(`Plan ${planId} confirmed executed — AlphaPilot is now monitoring the position.`);
       await load();
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : "Execution failed.");
-      await load();
+      setMessage(e instanceof Error ? e.message : "Could not confirm execution.");
     } finally {
       setBusyPlan(null);
     }
@@ -73,30 +89,31 @@ function AgentPageInner() {
     <div className="space-y-4">
       <Panel title="Binance Agent OS">
         <div className="px-4 py-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-sm font-medium">Direct MCP connection</div>
-              <div className="text-xs text-muted mt-1">
-                AlphaPilot is now the Binance MCP client. No API key is stored in AlphaPilot.
-              </div>
-            </div>
-            <StatusPill tone={connection?.authorized ? "gain" : "watch"}>
-              {connection?.authorized ? "connected" : "not connected"}
-            </StatusPill>
+          <div className="text-sm font-medium">AlphaPilot is not on Binance's agent allowlist</div>
+          <div className="text-xs text-muted leading-relaxed">
+            Binance Agent OS only allows Claude Desktop/Code, ChatGPT, Codex, VS Code, and Grok Bot to
+            connect directly — AlphaPilot's own backend is not on that list, so it never holds a Binance
+            credential. Instead: connect one of those AI clients to <em>both</em> Binance Agent OS MCP and
+            AlphaPilot's MCP server (see the wiring_instructions tool). That client reads your Binance
+            balance and relays it here, gets a risk-validated proposal from AlphaPilot, and — once you
+            approve — places the order through Binance Agent OS MCP directly.
           </div>
-          {!connection?.authorized && (
-            <Button onClick={connectBinance}>Connect Binance Agent OS</Button>
-          )}
-          {connection?.authorized && (
-            <div className="text-xs text-muted">
-              MCP authorization is active. Binance controls the granted scopes and any confirmation required for write actions.
-            </div>
-          )}
+          <div className="text-xs text-muted">
+            No AI client wired up yet? You can report your balance manually below so proposals can still be sized.
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2 pt-1">
+            <TextInput type="number" value={portfolioValue} onChange={setPortfolioValue} placeholder="Portfolio value (USDT)" />
+            <TextInput type="number" value={openExposure} onChange={setOpenExposure} placeholder="Open exposure (USDT)" />
+            <TextInput type="number" value={marginExposure} onChange={setMarginExposure} placeholder="Margin exposure (USDT)" />
+          </div>
+          <Button onClick={submitContext} disabled={!portfolioValue || submittingContext}>
+            {submittingContext ? "Saving…" : "Report account context"}
+          </Button>
           {message && <div className="text-xs border border-line rounded-sm p-3 bg-surface-raised">{message}</div>}
         </div>
       </Panel>
 
-      {connection?.authorized && <AccountState userId={userId} />}
+      {context && <AccountState userId={userId} />}
 
       <Panel title="Trading mode">
         <div className="px-4 py-3 flex items-center gap-2">
@@ -109,13 +126,15 @@ function AgentPageInner() {
           ))}
         </div>
         <div className="px-4 pb-3 text-xs text-muted">
-          AlphaPilot controls the orchestration and calls Binance Agent OS directly. Binance remains the final authorization/confirmation authority for write actions.
+          "Autonomous" only affects whether AlphaPilot's scheduled strategies keep proposing new plans —
+          AlphaPilot never places or closes a Binance order itself in any mode. Execution is always through
+          Binance Agent OS MCP, confirmed back below.
         </div>
       </Panel>
 
-      <Panel title="Trade plans — direct execution">
+      <Panel title="Trade plans awaiting Binance Agent OS execution">
         {plans.length === 0 ? (
-          <EmptyState message="No trade plans awaiting direct execution." />
+          <EmptyState message="No trade plans awaiting execution." />
         ) : (
           <div>
             {plans.map((p) => (
@@ -134,11 +153,24 @@ function AgentPageInner() {
                   <span>Reference entry ${p.entry_price}</span>
                   <span>{p.status}</span>
                 </div>
-                <div className="mt-3 flex items-center gap-2">
-                  <Button onClick={() => execute(p.id)} disabled={!connection?.authorized || !p.risk_check_passed || busyPlan === p.id}>
-                    {busyPlan === p.id ? "Submitting…" : "Execute via Binance Agent OS"}
-                  </Button>
-                </div>
+                {p.risk_check_passed && (
+                  <div className="mt-3 flex items-center gap-2">
+                    <TextInput
+                      value={confirmForms[p.id]?.orderId ?? ""}
+                      onChange={(v) => setConfirmForms((f) => ({ ...f, [p.id]: { ...f[p.id], orderId: v, fillPrice: f[p.id]?.fillPrice ?? "" } }))}
+                      placeholder="Binance order id (after placing via Agent OS)"
+                    />
+                    <TextInput
+                      type="number"
+                      value={confirmForms[p.id]?.fillPrice ?? ""}
+                      onChange={(v) => setConfirmForms((f) => ({ ...f, [p.id]: { ...f[p.id], fillPrice: v, orderId: f[p.id]?.orderId ?? "" } }))}
+                      placeholder="Fill price (optional)"
+                    />
+                    <Button onClick={() => confirmExecuted(p.id)} disabled={busyPlan === p.id}>
+                      {busyPlan === p.id ? "Confirming…" : "Confirm executed"}
+                    </Button>
+                  </div>
+                )}
               </div>
             ))}
           </div>

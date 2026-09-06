@@ -5,9 +5,11 @@ Everything that affects trading behavior (thresholds, allocations, stops)
 is env-driven so it can be tuned without a code change and so the Risk
 Engine's decisions are auditable against a known config snapshot.
 
-Binance trading is performed through the hosted Binance Agent OS MCP endpoint.
-No Binance API key/secret is stored. MCP authorization credentials are encrypted at rest.
-Binance itself may still require confirmation for every write action.
+Binance trading is performed by whichever allowlisted AI client (Claude,
+ChatGPT, etc.) the user connects to Binance Agent OS MCP directly. AlphaPilot
+itself is not on Binance's agent allowlist, holds no Binance API key, and
+never stores a Binance credential of any kind — see
+BINANCE_AGENT_OS_REFACTOR.md and docs/ADVISORY_REFACTOR.md.
 """
 from functools import lru_cache
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -58,20 +60,20 @@ class Settings(BaseSettings):
     openrouter_api_key: str = Field(default="")
     openrouter_model: str = Field(default="")
 
-    # Binance public REST is used for scheduled market discovery. Agent OS MCP
-    # is the direct authenticated account/execution boundary.
+    # Binance public REST is used for all market data and analysis. AlphaPilot
+    # is NOT an allowlisted Binance Agent OS MCP client (Binance's agent
+    # allowlist covers Claude Desktop/Code, ChatGPT, Codex, VS Code, Grok Bot
+    # only — see BINANCE_AGENT_OS_REFACTOR.md) so it never authenticates to
+    # Binance directly. Account state instead arrives via the relay in
+    # app/services/account_context.py, reported by whichever AI client the
+    # user is chatting with.
     binance_public_rest_base: str = Field(default="https://data-api.binance.vision")
     binance_mcp_endpoint: str = Field(default="https://agent.binance.com/mcp/agentic")
-    # MCP OAuth is the standard authorization mechanism used by protected MCP
-    # servers. These settings are provider-neutral; Binance controls the actual
-    # authorization page, scopes, and Agentic-account permissions.
     mcp_client_name: str = Field(default="AlphaPilot Agent")
-    mcp_oauth_redirect_uri: str = Field(default="http://localhost:8000/api/binance/oauth/callback")
-    mcp_oauth_encryption_key: str = Field(default="")
-    # HTTPS URL of the public Client ID Metadata Document (CIMD).
-    # When empty, derived as {PUBLIC_BASE_URL}/.well-known/oauth-client-metadata.json
-    # Binance Agent OS requires CIMD (client_id_metadata_document_supported=true).
-    mcp_client_metadata_url: str = Field(default="")
+    # Optional read-only key for the Simple Earn flexible-product list scan
+    # (app/earn/scanner.py). Never used for trading; AlphaPilot still never
+    # stores a Binance credential capable of moving funds.
+    binance_earn_api_key: str = Field(default="")
     public_base_url: str = Field(default="http://localhost:8000")
     frontend_public_url: str = Field(default="http://localhost:3000")
 

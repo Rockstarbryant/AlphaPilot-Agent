@@ -1,11 +1,11 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import get_db
 from app.jobs.position_monitor import check_positions
-from app.models.models import ExitSignal, Position
-from app.services.binance_agent_os import BinanceAgentOSService
+from app.models.models import ExitSignal, Position, PositionStatus
 
 router = APIRouter()
 
@@ -18,7 +18,9 @@ async def list_positions(db: AsyncSession = Depends(get_db)):
 
 @router.post("/monitor/run")
 async def run_position_monitor(db: AsyncSession = Depends(get_db)):
-    """Manually trigger a monitoring pass (the scheduler runs this continuously)."""
+    """Manually trigger a monitoring pass (the scheduler runs this continuously).
+    Detection is deterministic and always runs; execution of the resulting
+    exit signal is never automatic — see app/jobs/position_monitor.py."""
     signals = await check_positions(db)
     return {"exit_signals_generated": len(signals)}
 
@@ -34,11 +36,8 @@ async def list_exit_signals(acknowledged: bool | None = None, db: AsyncSession =
 
 @router.post("/exit-signals/{signal_id}/acknowledge")
 async def acknowledge_exit_signal(signal_id: str, db: AsyncSession = Depends(get_db)):
-    """
-    Marks an exit signal as acknowledged. Direct execution is handled by
-    /execute and BinanceAgentOSService; acknowledgement alone never represents
-    a confirmed Binance fill.
-    """
+    """Marks an exit signal as acknowledged. This never represents a
+    confirmed Binance fill — see confirm-execution below."""
     signal = await db.get(ExitSignal, signal_id)
     if signal:
         signal.acknowledged = True
@@ -46,14 +45,38 @@ async def acknowledge_exit_signal(signal_id: str, db: AsyncSession = Depends(get
     return {"signal_id": signal_id, "acknowledged": True}
 
 
-@router.post("/exit-signals/{signal_id}/execute")
-async def execute_exit_signal(signal_id: str, db: AsyncSession = Depends(get_db)):
+class ConfirmExitRequest(BaseModel):
+    binance_order_id: str
+    fill_price: float | None = None
+
+
+@router.post("/exit-signals/{signal_id}/confirm-execution")
+async def confirm_exit_execution(
+    signal_id: str, payload: ConfirmExitRequest, db: AsyncSession = Depends(get_db)
+):
+    """
+    AlphaPilot never places the exit order itself (see
+    BINANCE_AGENT_OS_REFACTOR.md — its backend is not an allowlisted Binance
+    Agent OS MCP client). Once the human (or their connected AI client) has
+    placed and confirmed the exit through Binance Agent OS MCP directly,
+    call this so AlphaPilot's Position/ExitSignal records match reality and
+    the monitor stops re-flagging it.
+    """
     signal = await db.get(ExitSignal, signal_id)
     if signal is None:
-        from fastapi import HTTPException
         raise HTTPException(404, "Exit signal not found")
-    try:
-        return {"signal_id": signal_id, **(await BinanceAgentOSService(db).execute_exit_signal(signal))}
-    except Exception as exc:
-        from fastapi import HTTPException
-        raise HTTPException(502, str(exc)) from exc
+    position = await db.get(Position, signal.position_id)
+    signal.execution_status = "filled"
+    signal.binance_order_id = payload.binance_order_id
+    signal.acknowledged = True
+    if position is not None:
+        position.remaining_fraction = max(0.0, position.remaining_fraction - signal.sell_fraction)
+        if position.remaining_fraction <= 0.0001:
+            from datetime import datetime, timezone
+
+            position.status = PositionStatus.closed
+            position.closed_at = datetime.now(timezone.utc)
+        else:
+            position.status = PositionStatus.partially_exited
+    await db.commit()
+    return {"signal_id": signal_id, "execution_status": "filled", "position_id": signal.position_id}

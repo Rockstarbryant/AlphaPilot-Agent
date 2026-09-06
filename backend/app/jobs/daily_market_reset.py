@@ -6,8 +6,9 @@ candidates clearing their score bar, creates risk-validated TradePlan
 proposals.
 
 This job touches ONLY public Binance market data. It creates risk-validated
-TradePlans but does not submit orders. Direct execution is a separate service
-step owned by BinanceAgentOSService.
+TradePlans but never submits orders — approval and execution happen through
+Binance Agent OS MCP via an allowlisted AI client, confirmed back via
+POST /api/trade-plans/{id}/confirm-execution (see BINANCE_AGENT_OS_REFACTOR.md).
 """
 from __future__ import annotations
 

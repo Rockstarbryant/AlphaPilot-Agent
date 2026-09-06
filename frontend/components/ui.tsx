@@ -1,4 +1,4 @@
-import { ReactNode } from "react";
+import { KeyboardEvent, ReactNode } from "react";
 import clsx from "clsx";
 
 export function Panel({
@@ -115,4 +115,29 @@ export function Button({
 
 export function EmptyState({ message }: { message: string }) {
   return <div className="px-4 py-10 text-center text-sm text-muted">{message}</div>;
+}
+
+export function TextInput({
+  value,
+  onChange,
+  placeholder,
+  type = "text",
+  onKeyDown,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  type?: "text" | "number";
+  onKeyDown?: (e: KeyboardEvent<HTMLInputElement>) => void;
+}) {
+  return (
+    <input
+      type={type}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      onKeyDown={onKeyDown}
+      placeholder={placeholder}
+      className="w-full bg-surface-raised border border-line rounded-sm px-3 py-1.5 text-sm text-text placeholder:text-muted focus:outline-none focus:border-gold/60"
+    />
+  );
 }

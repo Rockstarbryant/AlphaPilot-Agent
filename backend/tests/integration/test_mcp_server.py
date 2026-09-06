@@ -1,7 +1,9 @@
 """
 Tests AlphaPilot's own MCP server (app/mcp_server.py) using an MCP client
-over Streamable HTTP. The server exposes AlphaPilot-owned data; direct Binance
-execution is implemented separately by BinanceAgentOSService.
+over Streamable HTTP. The server exposes AlphaPilot-owned analysis and
+proposal data; Binance execution itself is always performed by an
+allowlisted external AI client through Binance Agent OS MCP directly, never
+by AlphaPilot's backend.
 
 Note on fixtures: the MCP server runs as its own subprocess with its own
 database connection — a real, separate connection, not the same one this
@@ -123,9 +125,9 @@ async def seeded_proposal():
 
 @pytest.mark.asyncio
 async def test_mcp_server_full_flow(mcp_server_process, seeded_proposal):
-    """AlphaPilot's own MCP surface is read-only; direct Binance execution is
-    performed by BinanceAgentOSService rather than by an external execution hand-off.
-    """
+    """AlphaPilot's own MCP surface is read/propose-only; Binance execution is
+    always performed by an allowlisted external AI client via Binance Agent
+    OS MCP directly, confirmed back here with record_fill."""
     async with streamable_http_client(MCP_URL) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()

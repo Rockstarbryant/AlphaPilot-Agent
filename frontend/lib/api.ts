@@ -49,12 +49,10 @@ export const api = {
     request<TradePlan[]>(`/api/trade-plans/${status ? `?status=${status}` : ""}`),
   getApprovalBrief: (planId: string) =>
     request<{ plan_id: string; brief: string }>(`/api/trade-plans/${planId}/approval-brief`),
-  executeTradePlan: (planId: string) =>
-    request<any>(`/api/trade-plans/${planId}/execute`, { method: "POST" }),
-  confirmExecution: (planId: string, binanceOrderId: string) =>
+  confirmExecution: (planId: string, binanceOrderId: string, fillPrice?: number, filledQuantity?: number) =>
     request(`/api/trade-plans/${planId}/confirm-execution`, {
       method: "POST",
-      body: JSON.stringify({ binance_order_id: binanceOrderId }),
+      body: JSON.stringify({ binance_order_id: binanceOrderId, fill_price: fillPrice, filled_quantity: filledQuantity }),
     }),
 
   listPositions: () => request<Position[]>("/api/positions/"),
@@ -64,8 +62,11 @@ export const api = {
     request<ExitSignal[]>(
       `/api/positions/exit-signals${acknowledged !== undefined ? `?acknowledged=${acknowledged}` : ""}`
     ),
-  executeExitSignal: (id: string) =>
-    request<any>(`/api/positions/exit-signals/${id}/execute`, { method: "POST" }),
+  confirmExitExecution: (id: string, binanceOrderId: string, fillPrice?: number) =>
+    request<any>(`/api/positions/exit-signals/${id}/confirm-execution`, {
+      method: "POST",
+      body: JSON.stringify({ binance_order_id: binanceOrderId, fill_price: fillPrice }),
+    }),
   acknowledgeExitSignal: (id: string) =>
     request(`/api/positions/exit-signals/${id}/acknowledge`, { method: "POST" }),
 
@@ -83,18 +84,38 @@ export const api = {
   resumeAgent: (userId: string) =>
     request<AgentConfig>(`/api/agent/${userId}/resume`, { method: "POST" }),
 
-  getBinanceConnection: (userId: string) =>
-    request<BinanceConnection>(`/api/binance/connection/${userId}`),
-  connectBinance: (userId: string) =>
-    request<{ authorization_url: string }>(`/api/binance/connect/${userId}`, { method: "POST" }),
-  getBinanceCapabilities: (userId: string) =>
-    request<{ tools: any[] }>(`/api/binance/capabilities/${userId}`),
-  getBinanceTicker: (userId: string, symbol: string) =>
-    request<any>(`/api/binance/ticker/${userId}/${encodeURIComponent(symbol)}`),
-  getBinanceAccount: (userId: string) =>
-    request<any>(`/api/binance/account/${userId}`),
-  syncBinanceAccount: (userId: string) =>
-    request<{ portfolio_value_usdt: number; raw: any }>(`/api/binance/account/${userId}/sync`, { method: "POST" }),
+  // AlphaPilot cannot connect to Binance Agent OS itself (not on Binance's
+  // agent allowlist — see BINANCE_AGENT_OS_REFACTOR.md). Whichever AI client
+  // the user is chatting with reads their real balance from Binance Agent OS
+  // and reports it here so AlphaPilot's risk engine has real numbers.
+  submitAccountContext: (userId: string, payload: AccountContextPayload) =>
+    request<{ ok: boolean; reported_at: string; portfolio_value_usdt: number }>(
+      `/api/binance/account-context/${userId}`,
+      { method: "POST", body: JSON.stringify(payload) }
+    ),
+  getAccountContext: (userId: string) =>
+    request<AccountContext>(`/api/binance/account-context/${userId}`),
+
+  analyzeSymbol: (symbol: string, interval = "1h") =>
+    request<CoinAnalysis>(`/api/market/analyze/${symbol}?interval=${interval}`),
+  getEarnOpportunities: () => request<EarnScanResult>(`/api/market/earn`),
+  getMarginAnalysis: (symbol: string) => request<MarginAnalysis>(`/api/market/margin/${symbol}`),
+  createTradeProposal: (
+    userId: string,
+    payload: { symbol: string; intent: "long" | "short" | "spot_hold"; requested_size_usdt?: number; requested_leverage?: number }
+  ) =>
+    request<TradeProposalResult>(`/api/market/proposal/${userId}`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  getPanicExplanation: (positionId: string, question = "") =>
+    request<PanicExplanation>(`/api/market/panic/${positionId}?question=${encodeURIComponent(question)}`),
+
+  sendAgentChatMessage: (userId: string, message: string, positionId?: string) =>
+    request<AgentChatResponse>(`/api/agent-chat/${userId}/message`, {
+      method: "POST",
+      body: JSON.stringify({ message, position_id: positionId }),
+    }),
 
   listNotifications: (userId: string, unreadOnly = false) =>
     request<Notification[]>(`/api/notifications/${userId}?unread_only=${unreadOnly}`),
@@ -198,12 +219,111 @@ export interface ExitSignal {
   target_pct: number | null;
 }
 
-export interface BinanceConnection {
+export interface AccountContextPayload {
+  portfolio_value_usdt: number;
+  open_exposure_usdt?: number;
+  margin_exposure_usdt?: number;
+  realized_daily_loss_pct?: number;
+  raw_snapshot?: Record<string, unknown>;
+}
+
+export interface AccountContext {
   status: string;
-  authorized: boolean;
-  connected_at: string | null;
-  last_error: string | null;
-  token_expires_at: number | null;
+  reported_at?: string;
+  portfolio_value_usdt?: number;
+  open_exposure_usdt?: number;
+  margin_exposure_usdt?: number;
+  realized_daily_loss_pct?: number;
+  raw_snapshot?: Record<string, unknown>;
+}
+
+export interface CoinAnalysis {
+  symbol: string;
+  interval: string;
+  price: number;
+  price_change_pct_24h: number;
+  rsi: { value: number | null; period: number; signal: string };
+  macd: { macd: number | null; signal_line: number | null; histogram: number | null; crossover: string };
+  momentum: { roc_pct: number | null; direction: string };
+  market_regime: string;
+  regime_notes: string;
+  bias: "LONG" | "SHORT" | "HOLD_SPOT" | "WAIT";
+  confidence: number;
+  rationale: string[];
+  spot_guidance: string;
+  derivatives_guidance: string;
+  generated_at: string;
+}
+
+export interface EarnOpportunity {
+  asset: string;
+  product_id: string;
+  latest_apy_pct: number;
+  min_purchase_amount: number;
+  is_hot: boolean;
+}
+
+export interface EarnScanResult {
+  opportunities: EarnOpportunity[];
+  unavailable_reason: string | null;
+}
+
+export interface MarginAnalysis {
+  symbol: string;
+  eligible: boolean;
+  reasons: string[];
+  bias: string;
+  confidence: number;
+  suggested_leverage: number;
+  max_leverage_allowed: number;
+  daily_interest_rate_pct: number;
+  interest_rate_is_estimate: boolean;
+  est_daily_cost_pct_of_position: number;
+  notes: string;
+}
+
+export interface TradeProposalResult {
+  ok: boolean;
+  error?: string;
+  plan_id?: string;
+  symbol?: string;
+  intent?: string;
+  side?: string;
+  is_margin?: boolean;
+  suggested_margin_usdt?: number;
+  suggested_leverage?: number | null;
+  reference_entry_price?: number;
+  stop_loss_pct?: number;
+  take_profit_targets_pct?: Record<string, number>;
+  risk_check_passed?: boolean;
+  risk_check_notes?: Record<string, string>;
+  bias?: string;
+  confidence?: number;
+  rationale?: string[];
+  next_step?: string;
+}
+
+export interface PanicExplanation {
+  position_id: string;
+  symbol: string;
+  entry_price: number;
+  current_price: number;
+  pnl_pct: number;
+  stop_loss_pct: number;
+  distance_to_stop_pct: number;
+  current_bias: string;
+  current_confidence: number;
+  current_rationale: string[];
+  thesis_still_valid: boolean;
+  recommendation: "CLOSE" | "CONSIDER_CLOSING" | "HOLD";
+  headline: string;
+  note: string;
+}
+
+export interface AgentChatResponse {
+  reply: string;
+  tool_used: string | null;
+  data: Record<string, any> | null;
 }
 
 export interface AgentConfig {

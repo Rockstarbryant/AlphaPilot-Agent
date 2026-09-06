@@ -1,14 +1,13 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from app.auth.dependencies import get_current_user
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.dependencies import get_current_user
 from app.db.base import get_db
 from app.models.models import AuditEvent, Position, TradePlan, TradePlanStatus
-from app.services.binance_agent_os import BinanceAgentOSService
 
 router = APIRouter()
 
@@ -36,33 +35,16 @@ async def get_approval_brief(plan_id: str, db: AsyncSession = Depends(get_db), c
         "plan_id": plan.id,
         "brief": (
             f"AlphaPilot trade proposal — {plan.strategy.value} — risk-validated.\n\n"
-            f"Symbol: {plan.symbol}\nSide: {plan.side}\nPosition size: ${plan.position_size_usdt:.2f} USDT\n"
+            f"Symbol: {plan.symbol}\nSide: {plan.side}\nSuggested size: ${plan.position_size_usdt:.2f} USDT\n"
             f"Reference entry: {plan.entry_price}\nHard stop: {plan.stop_loss_pct:.1f}%\n"
             f"Profit ladder: {targets}\nOpportunity score: {plan.opportunity_score:.1f}/100\n"
-            f"Reason: {plan.reason}\n\nAlphaPilot can now submit this plan directly through Binance Agent OS MCP."
+            f"Reason: {plan.reason}\n\n"
+            "AlphaPilot cannot submit this order itself — Binance's agent allowlist does not "
+            "include AlphaPilot's backend. Place this order through Binance Agent OS MCP with an "
+            "allowlisted AI client (Claude, ChatGPT, Codex, etc.), then confirm it below so "
+            "AlphaPilot opens a Position and starts monitoring stops/targets."
         ),
     }
-
-
-@router.post("/{plan_id}/execute")
-async def execute_trade_plan(plan_id: str, db: AsyncSession = Depends(get_db), current_user=Depends(get_current_user)):
-    """Direct AlphaPilot -> Binance Agent OS MCP execution path.
-
-    Binance remains the authorization/confirmation authority for write actions.
-    AlphaPilot never receives or stores Binance API keys.
-    """
-    plan = await db.get(TradePlan, plan_id)
-    if not plan:
-        raise HTTPException(404, "Trade plan not found")
-    if plan.user_id != current_user.id:
-        raise HTTPException(403, "Forbidden")
-    if not plan.risk_check_passed:
-        raise HTTPException(400, "Risk-rejected trade plan cannot be executed.")
-    try:
-        result = await BinanceAgentOSService(db).execute_trade_plan(plan)
-        return {"plan_id": plan.id, **result}
-    except Exception as exc:
-        raise HTTPException(502, str(exc)) from exc
 
 
 class ConfirmExecutionRequest(BaseModel):
@@ -72,18 +54,30 @@ class ConfirmExecutionRequest(BaseModel):
 
 
 @router.post("/{plan_id}/confirm-execution")
-async def confirm_execution(plan_id: str, payload: ConfirmExecutionRequest, db: AsyncSession = Depends(get_db)):
-    """Deprecated compatibility endpoint.
-
-    Current production flow is /execute, which submits through AlphaPilot's
-    Binance Agent OS MCP client. This endpoint remains only so older data/tools
-    can be reconciled during migration; it must not be used as the normal UI flow.
+async def confirm_execution(
+    plan_id: str,
+    payload: ConfirmExecutionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    The production execution-confirmation path. AlphaPilot never places
+    Binance orders itself (see BINANCE_AGENT_OS_REFACTOR.md) — after the
+    human (or the allowlisted AI client on their behalf) places the order
+    directly through Binance Agent OS MCP and it fills, call this (or the
+    equivalent MCP tool, ``record_fill``) with the resulting order id and
+    fill details so AlphaPilot opens/updates a Position and starts
+    monitoring stops and profit targets.
     """
     plan = await db.get(TradePlan, plan_id)
     if not plan:
         raise HTTPException(404, "Trade plan not found")
+    if plan.user_id != current_user.id:
+        raise HTTPException(403, "Forbidden")
     if plan.status not in (TradePlanStatus.proposed, TradePlanStatus.approved):
-        raise HTTPException(400, f"Plan is '{plan.status}', not awaiting reconciliation.")
+        raise HTTPException(400, f"Plan is '{plan.status}', not awaiting execution confirmation.")
+    if not plan.risk_check_passed:
+        raise HTTPException(400, "Risk-rejected trade plan cannot be confirmed as executed.")
 
     fill_price = payload.fill_price or plan.entry_price
     quantity = payload.filled_quantity or (plan.position_size_usdt / fill_price if fill_price else 0.0)
@@ -100,10 +94,14 @@ async def confirm_execution(plan_id: str, payload: ConfirmExecutionRequest, db: 
             targets_hit={}, peak_price_since_entry=fill_price,
         )
         db.add(position)
+    else:
+        existing.entry_price = fill_price
+        existing.quantity = quantity
+        position = existing
     db.add(AuditEvent(
-        user_id=plan.user_id, strategy=plan.strategy.value, action="position_opened_reconciled",
+        user_id=plan.user_id, strategy=plan.strategy.value, action="position_opened_confirmed",
         asset=plan.symbol, decision="OPEN", status="ok",
         risk_result={"binance_order_id": payload.binance_order_id, "fill_price": fill_price},
     ))
     await db.commit()
-    return {"plan_id": plan.id, "status": plan.status, "position_id": existing.id if existing else None}
+    return {"plan_id": plan.id, "status": plan.status, "position_id": position.id}

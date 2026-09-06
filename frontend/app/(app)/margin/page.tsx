@@ -1,8 +1,63 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, MarketCandidate } from "@/lib/api";
-import { Panel, StatusPill, EmptyState } from "@/components/ui";
+import { api, MarketCandidate, MarginAnalysis } from "@/lib/api";
+import { Panel, StatusPill, Button, EmptyState, TextInput } from "@/components/ui";
+
+function SymbolMarginAnalyzer() {
+  const [symbol, setSymbol] = useState("BTCUSDT");
+  const [loading, setLoading] = useState(false);
+  const [analysis, setAnalysis] = useState<MarginAnalysis | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function analyze() {
+    if (!symbol) return;
+    setLoading(true);
+    setError(null);
+    try {
+      setAnalysis(await api.getMarginAnalysis(symbol.toUpperCase()));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not analyze margin for this symbol.");
+      setAnalysis(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Panel title="Margin-trade a specific symbol">
+      <div className="px-4 py-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <TextInput value={symbol} onChange={setSymbol} placeholder="SOLUSDT" onKeyDown={(e) => e.key === "Enter" && analyze()} />
+          <Button onClick={analyze} disabled={loading}>{loading ? "Analyzing…" : "Analyze"}</Button>
+        </div>
+        {error && <div className="text-xs text-loss">{error}</div>}
+        {analysis && (
+          <div className="border border-line rounded-sm p-3 space-y-2 text-sm">
+            <div className="flex items-center justify-between">
+              <span className="tnum font-medium">{analysis.symbol}</span>
+              <StatusPill tone={analysis.eligible ? "gain" : "loss"}>
+                {analysis.eligible ? "MARGIN ELIGIBLE" : "MARGIN BLOCKED"}
+              </StatusPill>
+            </div>
+            <div className="text-xs text-muted">bias {analysis.bias} ({analysis.confidence}% confidence)</div>
+            <ul className="text-xs text-muted list-disc list-inside">
+              {analysis.reasons.map((r, i) => <li key={i}>{r}</li>)}
+            </ul>
+            {analysis.eligible && (
+              <div className="text-xs">
+                Suggested leverage <span className="text-gold">{analysis.suggested_leverage}x</span> (ceiling {analysis.max_leverage_allowed}x)
+                {" — "}
+                {analysis.interest_rate_is_estimate ? "estimated" : "reported"} cost ≈{analysis.est_daily_cost_pct_of_position.toFixed(4)}%/day
+              </div>
+            )}
+            <div className="text-xs text-muted italic">{analysis.notes}</div>
+          </div>
+        )}
+      </div>
+    </Panel>
+  );
+}
 
 export default function MarginPage() {
   const [candidates, setCandidates] = useState<MarketCandidate[]>([]);
@@ -14,15 +69,8 @@ export default function MarginPage() {
 
   return (
     <div className="space-y-4">
-      <Panel>
-        <div className="px-4 py-3 text-xs text-muted">
-          Margin execution proposals are a Phase 2 addition, pending verification of isolated-margin
-          specifics through official Binance documentation (see docs/BINANCE_CAPABILITY_MATRIX.md).
-          HOT/margin-eligibility scanning is live below — eligibility reasons are shown for every
-          candidate, including why a candidate was blocked.
-        </div>
-      </Panel>
-      <Panel title="HOT candidates &amp; margin eligibility">
+      <SymbolMarginAnalyzer />
+      <Panel title="HOT candidates &amp; margin eligibility — scheduled scan">
         {candidates.length === 0 ? (
           <EmptyState message="No HOT candidates from the most recent scan." />
         ) : (

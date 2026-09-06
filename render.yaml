@@ -32,11 +32,7 @@ services:
         value: https://agent.binance.com/mcp/agentic
       - key: MCP_CLIENT_NAME
         value: AlphaPilot Agent
-      - key: MCP_OAUTH_REDIRECT_URI
-        sync: false
-      - key: MCP_OAUTH_ENCRYPTION_KEY
-        sync: false
-      - key: MCP_CLIENT_METADATA_URL
+      - key: BINANCE_EARN_API_KEY
         sync: false
       - key: PUBLIC_BASE_URL
         sync: false

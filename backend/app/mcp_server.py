@@ -1,18 +1,26 @@
 """
 AlphaPilot MCP server — Option A workflow layer.
 
-This is NOT Binance's execution server. It exposes AlphaPilot-owned proposals,
-risk briefs, approvals, and fill recording so an *allowlisted* MCP client
-(Claude Code, Cursor, ChatGPT, Codex, VS Code, Grok Bot) can:
+This is NOT Binance's execution server. It exposes AlphaPilot-owned market
+analysis, Earn/margin scans, risk-validated proposals, approvals, and fill
+recording so an *allowlisted* MCP client (Claude Code, Cursor, ChatGPT,
+Codex, VS Code, Grok Bot) can:
 
   1. Connect to Binance Agent OS MCP (OAuth on desktop — supported client)
   2. Connect to AlphaPilot MCP (this server)
-  3. Read risk-validated TradePlans here
-  4. Place orders via Binance MCP tools
-  5. Call record_fill here so AlphaPilot opens a Position and monitors exits
+  3. Ask analyze_symbol / get_earn_opportunities / get_margin_analysis for a view
+  4. Read the user's Binance balance via Binance MCP and relay it here with
+     submit_account_context
+  5. Call build_trade_proposal to get a risk-validated size/leverage/TP/SL proposal
+  6. Get human approval, place the order via Binance MCP tools
+  7. Call record_fill here so AlphaPilot opens a Position and monitors exits
+  8. If a position moves against the user, call explain_panic to relay
+     AlphaPilot's read on whether the original thesis still holds
 
 AlphaPilot never completes Binance Agentic OAuth itself (self-built clients
-are currently blocked by Binance's agent allowlist).
+are currently blocked by Binance's agent allowlist) and never stores a
+Binance credential of any kind — account state only ever arrives through
+submit_account_context, reported by the calling client.
 """
 from __future__ import annotations
 
@@ -22,6 +30,9 @@ from mcp.server.mcpserver import MCPServer
 from sqlalchemy import select
 
 from app.db.base import AsyncSessionLocal
+from app.earn.scanner import scan_earn_opportunities
+from app.margin.analysis import analyze_margin_symbol
+from app.market.coin_analysis import analyze_symbol as _analyze_symbol
 from app.models.models import (
     AuditEvent,
     Position,
@@ -29,17 +40,21 @@ from app.models.models import (
     TradePlan,
     TradePlanStatus,
 )
+from app.services.account_context import AccountContextStale, ingest_account_context
+from app.services.panic_advisor import PositionNotFound, explain_position
+from app.services.trade_proposal import build_trade_proposal as _build_trade_proposal
 
 server = MCPServer(
     name="alphapilot",
     title="AlphaPilot",
     description=(
-        "AlphaPilot policy & proposal workflow. Use WITH the Binance MCP server: "
-        "read risk-validated plans here, execute orders through Binance Agent OS MCP "
-        "(allowlisted client only), then record_fill here. AlphaPilot does not hold "
-        "Binance trading OAuth tokens."
+        "AlphaPilot Binance research & trading advisory. Use WITH the Binance MCP server: "
+        "get market analysis and Earn/margin scans here (no auth needed), relay account "
+        "state here after reading it from Binance Agent OS, get a risk-validated proposal, "
+        "execute orders through Binance Agent OS MCP (allowlisted client only), then "
+        "record_fill here. AlphaPilot does not hold Binance trading OAuth tokens."
     ),
-    version="0.3.0-option-a",
+    version="0.4.0-advisory",
 )
 
 
@@ -79,14 +94,122 @@ async def wiring_instructions() -> str:
         "   Authenticate in the browser, grant Market data + Account + Trade as needed.\n"
         "3. Add AlphaPilot MCP (this server) — Streamable HTTP URL from your deploy\n"
         "   (e.g. https://YOUR-MCP-HOST:9000/mcp or the path your host documents).\n"
-        "4. Workflow:\n"
-        "   - list_pending_proposals / get_approval_brief\n"
-        "   - approve_trade_plan(plan_id) after human confirmation in AlphaPilot UI or chat\n"
+        "4. Advisory workflow (no trade intent yet):\n"
+        "   - analyze_symbol(symbol) for RSI/MACD/momentum + long/short/hold bias\n"
+        "   - get_earn_opportunities() for Simple Earn flexible-product APY\n"
+        "   - get_margin_analysis(symbol) for margin-trade eligibility + leverage/cost estimate\n"
+        "5. Sized-proposal workflow (needs a trade intent):\n"
+        "   - Read the user's balance/positions via Binance MCP\n"
+        "   - submit_account_context(user_id, portfolio_value_usdt, ...) to relay it here\n"
+        "   - build_trade_proposal(user_id, symbol, intent) for a risk-validated size/leverage/TP/SL\n"
+        "   - approve_trade_plan(plan_id) after human confirmation\n"
         "   - place order via Binance MCP tools (MARKET BUY/SELL for the plan size)\n"
         "   - record_fill(plan_id, order_id, fill_price, quantity) so AlphaPilot opens a Position\n"
-        "5. AlphaPilot does NOT complete Binance Agentic OAuth itself (self-built clients are blocked).\n"
-        "6. Market scans use public REST; they do not need Binance MCP.\n"
+        "6. If the human panics about an open position: explain_panic(position_id, question)\n"
+        "   relays whether the original thesis still holds — for you to answer them with.\n"
+        "7. AlphaPilot does NOT complete Binance Agentic OAuth itself (self-built clients are "
+        "blocked) and never stores a Binance credential — account state only ever arrives via "
+        "submit_account_context.\n"
+        "8. Analysis/Earn/margin scans use public REST; they do not need Binance MCP at all.\n"
     )
+
+
+@server.tool()
+async def analyze_symbol(symbol: str, interval: str = "1h") -> dict:
+    """
+    Momentum/RSI/MACD-based analysis for one symbol, e.g. "BTCUSDT" — answers
+    "what do you think about trading BTC/USDT, should I long or short, or
+    buy spot and hold?" Public Binance data only — works without any Binance
+    Agent OS connection.
+    """
+    result = await _analyze_symbol(symbol, interval=interval)
+    return result.__dict__
+
+
+@server.tool()
+async def get_earn_opportunities() -> dict:
+    """Scan Binance Simple Earn flexible products for current APY (read-only)."""
+    return await scan_earn_opportunities()
+
+
+@server.tool()
+async def get_margin_analysis(symbol: str, daily_interest_rate_pct: float | None = None) -> dict:
+    """
+    Spot margin trading analysis for one symbol: eligibility (liquidity,
+    spread, regime, conviction), suggested leverage within the account's
+    ceiling, and an interest-cost estimate. If you already know the live
+    Binance margin daily interest rate from Binance MCP, pass it in for an
+    exact cost figure instead of AlphaPilot's conservative estimate.
+    """
+    result = await analyze_margin_symbol(symbol, daily_interest_rate_pct=daily_interest_rate_pct)
+    return result.__dict__
+
+
+@server.tool()
+async def submit_account_context(
+    user_id: str,
+    portfolio_value_usdt: float,
+    open_exposure_usdt: float = 0.0,
+    margin_exposure_usdt: float = 0.0,
+    realized_daily_loss_pct: float = 0.0,
+) -> dict:
+    """
+    Relay Binance account state you just read from Binance Agent OS MCP.
+    AlphaPilot holds no Binance credential and cannot read this itself —
+    call this before build_trade_proposal, and again if more than ~10
+    minutes pass before the user wants a sized proposal.
+    """
+    async with AsyncSessionLocal() as db:
+        snapshot = await ingest_account_context(
+            db,
+            user_id=user_id,
+            portfolio_value_usdt=portfolio_value_usdt,
+            open_exposure_usdt=open_exposure_usdt,
+            margin_exposure_usdt=margin_exposure_usdt,
+            realized_daily_loss_pct=realized_daily_loss_pct,
+        )
+        return {"ok": True, "reported_at": snapshot.reported_at.isoformat()}
+
+
+@server.tool()
+async def build_trade_proposal(
+    user_id: str,
+    symbol: str,
+    intent: str,
+    requested_size_usdt: float | None = None,
+    requested_leverage: float | None = None,
+) -> dict:
+    """
+    Build a risk-validated trade proposal (suggested margin, leverage, hard
+    stop, take-profit ladder) for `symbol`. `intent` is one of: long, short,
+    spot_hold. Requires a fresh submit_account_context call first — without
+    one, this returns ok=false with an explanation rather than sizing a
+    trade off unknown balance.
+    """
+    async with AsyncSessionLocal() as db:
+        try:
+            return await _build_trade_proposal(
+                db, user_id=user_id, symbol=symbol, intent=intent,
+                requested_size_usdt=requested_size_usdt, requested_leverage=requested_leverage,
+            )
+        except (ValueError, AccountContextStale) as exc:
+            return {"ok": False, "error": str(exc)}
+
+
+@server.tool()
+async def explain_panic(position_id: str, question: str = "") -> dict:
+    """
+    Relay this when a human panics about an open position ("it's going
+    against me, should I close it?"). Re-runs AlphaPilot's analysis against
+    the position's current price and reports whether the original thesis
+    still holds, distance to the hard stop, and a recommendation — for you
+    to phrase back to the human. AlphaPilot never closes anything itself.
+    """
+    async with AsyncSessionLocal() as db:
+        try:
+            return await explain_position(db, position_id=position_id, question=question)
+        except PositionNotFound as exc:
+            return {"ok": False, "error": str(exc)}
 
 
 @server.tool()

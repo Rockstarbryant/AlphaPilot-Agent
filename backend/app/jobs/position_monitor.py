@@ -1,7 +1,12 @@
 """
 Position Monitor. Runs independently of the AI/agent loop. It evaluates
-deterministic exit rules and, when execution is enabled, routes exit signals
-through AlphaPilot's direct Binance Agent OS service.
+deterministic exit rules and raises ExitSignal rows for the human (or their
+connected AI client) to act on. AlphaPilot's backend is not an allowlisted
+Binance Agent OS MCP client (see BINANCE_AGENT_OS_REFACTOR.md), so it never
+executes an exit itself — see app/services/panic_advisor.py for the
+explanation surface, and POST /api/positions/exit-signals/{id}/confirm-execution
+for closing the loop once the human/client has placed the exit through
+Binance Agent OS MCP directly.
 """
 from __future__ import annotations
 
@@ -12,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.binance.market_data import BinanceMarketDataClient
 from app.core.config import get_settings
-from app.models.models import AgentConfig, ExitSignal, Position, PositionStatus, RiskPolicy, TradingMode
+from app.models.models import ExitSignal, Position, PositionStatus, RiskPolicy
 from app.services.notifications import notify
 
 settings = get_settings()
@@ -120,24 +125,11 @@ async def check_positions(db: AsyncSession) -> list[ExitSignal]:
     finally:
         await client.close()
 
-    # Execution is a separate phase so the deterministic detector never
-    # marks a position closed before Binance confirms the fill.
-    from app.services.binance_agent_os import BinanceAgentOSService
-    for signal in signals:
-        position = await db.get(Position, signal.position_id)
-        if position is None:
-            continue
-        config_result = await db.execute(select(AgentConfig).where(AgentConfig.user_id == position.user_id))
-        config = config_result.scalar_one_or_none()
-        if config is None or config.trading_mode == TradingMode.read_only:
-            continue
-        try:
-            await BinanceAgentOSService(db).execute_exit_signal(signal)
-        except Exception:
-            # The signal remains pending/failed and is visible for retry;
-            # never convert a detected exit into a false closed state.
-            continue
-
+    # Detection ends here. Execution is intentionally NOT performed by
+    # AlphaPilot (see module docstring) — signals surface via
+    # GET /api/positions/exit-signals and the notify() calls above for the
+    # human, or their connected AI client, to act on through Binance Agent
+    # OS MCP directly and then confirm.
     return signals
 
 
