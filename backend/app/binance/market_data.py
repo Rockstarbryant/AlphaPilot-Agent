@@ -1,10 +1,18 @@
 """
-Binance public Spot market data — no API key, no Agent OS session required.
-Endpoints verified against Binance's public REST API (api.binance.com):
-  GET /api/v3/ticker/24hr        - 24h stats for all symbols
-  GET /api/v3/exchangeInfo       - tradeable symbols, filters
-  GET /api/v3/depth              - order book (for spread calc)
-  GET /api/v3/klines             - candlesticks
+Binance public market data — Spot AND USDⓈ-M Futures, no API key, no Agent
+OS session required. Endpoints verified against Binance's public REST APIs:
+
+  Spot (api.binance.com / data-api.binance.vision):
+    GET /api/v3/ticker/24hr   GET /api/v3/exchangeInfo
+    GET /api/v3/depth         GET /api/v3/klines
+
+  USDⓈ-M Futures (fapi.binance.com):
+    GET /fapi/v1/ticker/24hr  GET /fapi/v1/exchangeInfo
+    GET /fapi/v1/depth        GET /fapi/v1/klines
+
+Same response shape for the fields this client reads, so one class serves
+both — just pass market_type="futures" to point it at the futures host and
+use futures' exchangeInfo eligibility fields instead of spot's.
 
 This module is the public REST market-data adapter used by the scheduler,
 app/market/coin_analysis.py, app/margin/analysis.py, and the position
@@ -17,6 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Literal
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter
@@ -26,6 +35,10 @@ from app.core.config import get_settings
 settings = get_settings()
 
 MAX_DATA_AGE_SECONDS = 30
+
+MarketType = Literal["spot", "futures"]
+
+_FUTURES_BASE_URL = "https://fapi.binance.com"
 
 
 @dataclass
@@ -50,8 +63,18 @@ class StaleMarketDataError(RuntimeError):
 
 
 class BinanceMarketDataClient:
-    def __init__(self, base_url: str | None = None):
-        self.base_url = base_url or settings.binance_public_rest_base
+    def __init__(self, base_url: str | None = None, market_type: MarketType = "spot"):
+        self.market_type = market_type
+        if base_url:
+            self.base_url = base_url
+        elif market_type == "futures":
+            self.base_url = _FUTURES_BASE_URL
+        else:
+            self.base_url = settings.binance_public_rest_base
+        self._ticker_path = "/fapi/v1/ticker/24hr" if market_type == "futures" else "/api/v3/ticker/24hr"
+        self._exchange_info_path = "/fapi/v1/exchangeInfo" if market_type == "futures" else "/api/v3/exchangeInfo"
+        self._depth_path = "/fapi/v1/depth" if market_type == "futures" else "/api/v3/depth"
+        self._klines_path = "/fapi/v1/klines" if market_type == "futures" else "/api/v3/klines"
         self._client = httpx.AsyncClient(base_url=self.base_url, timeout=10.0)
 
     async def close(self):
@@ -68,7 +91,7 @@ class BinanceMarketDataClient:
 
     async def get_24h_tickers(self) -> list[TickerSnapshot]:
         """All symbols' 24h stats in a single call (weight-efficient)."""
-        raw = await self._get("/api/v3/ticker/24hr")
+        raw = await self._get(self._ticker_path)
         now = datetime.now(timezone.utc)
         out = []
         for row in raw:
@@ -87,21 +110,25 @@ class BinanceMarketDataClient:
         return out
 
     async def get_exchange_info_symbols(self, quote_asset: str = "USDT") -> set[str]:
-        """Tradeable symbols against a quote asset, excluding non-SPOT / halted."""
-        raw = await self._get("/api/v3/exchangeInfo")
+        """Tradeable symbols against a quote asset. Spot excludes non-SPOT/
+        halted symbols; futures excludes anything that isn't a live
+        perpetual contract (delivery/quarterly contracts expire, which
+        would silently break a strategy holding one past expiry)."""
+        raw = await self._get(self._exchange_info_path)
         symbols = set()
         for s in raw.get("symbols", []):
-            if (
-                s.get("status") == "TRADING"
-                and s.get("quoteAsset") == quote_asset
-                and s.get("isSpotTradingAllowed", True)
-            ):
+            if s.get("status") != "TRADING" or s.get("quoteAsset") != quote_asset:
+                continue
+            if self.market_type == "futures":
+                if s.get("contractType") == "PERPETUAL":
+                    symbols.add(s["symbol"])
+            elif s.get("isSpotTradingAllowed", True):
                 symbols.add(s["symbol"])
         return symbols
 
     async def get_spread_bps(self, symbol: str) -> float | None:
         """Best bid/ask spread in basis points from the order book top level."""
-        raw = await self._get("/api/v3/depth", params={"symbol": symbol, "limit": 5})
+        raw = await self._get(self._depth_path, params={"symbol": symbol, "limit": 5})
         bids, asks = raw.get("bids"), raw.get("asks")
         if not bids or not asks:
             return None
@@ -113,7 +140,7 @@ class BinanceMarketDataClient:
 
     async def get_klines(self, symbol: str, interval: str = "1h", limit: int = 24) -> list[dict]:
         raw = await self._get(
-            "/api/v3/klines", params={"symbol": symbol, "interval": interval, "limit": limit}
+            self._klines_path, params={"symbol": symbol, "interval": interval, "limit": limit}
         )
         return [
             {

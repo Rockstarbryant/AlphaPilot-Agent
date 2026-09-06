@@ -1,13 +1,19 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { api } from "@/lib/api";
 import { setSession } from "@/lib/use-user";
 import { Button } from "@/components/ui";
 
 export default function LoginPage() {
+  return <Suspense fallback={null}><LoginPageInner /></Suspense>;
+}
+
+function LoginPageInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const expired = searchParams.get("expired") === "1";
   const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -38,6 +44,11 @@ export default function LoginPage() {
         </div>
 
         <form onSubmit={handleSubmit} className="border border-line bg-surface rounded-sm p-5 space-y-4">
+          {expired && (
+            <div className="text-xs text-gold border border-gold/40 bg-gold/5 rounded-sm p-2">
+              Your session expired — log in again to continue.
+            </div>
+          )}
           <div>
             <label className="block text-xs text-muted mb-1">Email</label>
             <input

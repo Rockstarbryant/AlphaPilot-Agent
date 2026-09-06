@@ -78,10 +78,20 @@ class Settings(BaseSettings):
     frontend_public_url: str = Field(default="http://localhost:3000")
 
     # --- Market session ---
+    # Legacy fields, no longer used to gate the scan (see scan_interval_minutes
+    # below) — kept only so old deployments' env vars don't fail to parse.
     daily_session_hour_utc: int = 0
     daily_session_minute_utc: int = 0
-    gainer_candidate_count: int = 15
-    loser_candidate_count: int = 5
+    # Market scans (Gainer/Recovery/Hot, spot AND futures) run on this
+    # cadence instead of once a day — see docs/STRATEGIES.md.
+    scan_interval_minutes: int = 60
+    gainer_candidate_count: int = 25
+    loser_candidate_count: int = 12
+    hot_candidate_count: int = 20
+    # A candidate not re-confirmed by a scan within this window is stale and
+    # gets pruned (app/jobs/market_cleanup.py) — this is what keeps the
+    # Opportunities tab from showing coins scanned days ago.
+    candidate_retention_hours: int = 6
 
     # --- Liquidity / eligibility filters (Gainer + Recovery universe) ---
     min_quote_volume_24h_usdt: float = 500_000.0

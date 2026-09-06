@@ -6,6 +6,13 @@ function authHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+export class SessionExpiredError extends Error {
+  constructor() {
+    super("Your session has expired — please log in again.");
+    this.name = "SessionExpiredError";
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     ...init,
@@ -15,9 +22,29 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...(init?.headers || {}),
     },
   });
+  if (res.status === 401) {
+    // A stale/expired JWT should never surface as raw "{"detail":"Invalid or
+    // expired token"}" JSON in the UI — clear it and send the whole app back
+    // to login in one place instead of every caller handling this itself.
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem("alphapilot_token");
+      window.localStorage.removeItem("alphapilot_user_id");
+      if (window.location.pathname !== "/login") {
+        window.location.href = "/login?expired=1";
+      }
+    }
+    throw new SessionExpiredError();
+  }
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`${res.status} ${res.statusText}: ${body}`);
+    let detail = body;
+    try {
+      const parsed = JSON.parse(body);
+      detail = parsed.detail ?? body;
+    } catch {
+      // body wasn't JSON — use it as-is
+    }
+    throw new Error(typeof detail === "string" ? detail : `${res.status} ${res.statusText}`);
   }
   return res.json() as Promise<T>;
 }
@@ -42,8 +69,17 @@ export const api = {
     }),
   listSessions: () => request<MarketSession[]>("/api/sessions/"),
 
-  listCandidates: (sessionId?: string) =>
-    request<MarketCandidate[]>(`/api/candidates/${sessionId ? `?session_id=${sessionId}` : ""}`),
+  listCandidates: (params?: { sessionId?: string; marketType?: "spot" | "futures"; status?: string; strategy?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.sessionId) qs.set("session_id", params.sessionId);
+    if (params?.marketType) qs.set("market_type", params.marketType);
+    if (params?.status) qs.set("status", params.status);
+    if (params?.strategy) qs.set("strategy", params.strategy);
+    const query = qs.toString();
+    return request<MarketCandidate[]>(`/api/candidates/${query ? `?${query}` : ""}`);
+  },
+  explainCandidate: (candidateId: string) =>
+    request<{ candidate_id: string; explanation: string }>(`/api/candidates/${candidateId}/explain`, { method: "POST" }),
 
   listTradePlans: (status?: string) =>
     request<TradePlan[]>(`/api/trade-plans/${status ? `?status=${status}` : ""}`),
@@ -116,6 +152,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ message, position_id: positionId }),
     }),
+  getChatHistory: (userId: string) =>
+    request<ChatHistoryMessage[]>(`/api/agent-chat/${userId}/history`),
+  getCopilotStatus: () =>
+    request<{ ai_provider: string; ai_configured: boolean; note: string | null }>(`/api/agent-chat/status`),
 
   listNotifications: (userId: string, unreadOnly = false) =>
     request<Notification[]>(`/api/notifications/${userId}?unread_only=${unreadOnly}`),
@@ -154,6 +194,7 @@ export interface MarketCandidate {
   symbol: string;
   strategy: string;
   status: string;
+  market_type: "spot" | "futures";
   price: number;
   daily_change_pct: number;
   quote_volume_24h: number;
@@ -162,6 +203,7 @@ export interface MarketCandidate {
   risk_score: number | null;
   score_breakdown: Record<string, number>;
   reason: string | null;
+  ai_explanation: string | null;
   data_source_timestamp: string;
   created_at: string;
 }
@@ -321,9 +363,20 @@ export interface PanicExplanation {
 }
 
 export interface AgentChatResponse {
+  id: string;
   reply: string;
   tool_used: string | null;
   data: Record<string, any> | null;
+  ai_narration_used: boolean;
+}
+
+export interface ChatHistoryMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  tool_used: string | null;
+  tool_data: Record<string, any> | null;
+  created_at: string;
 }
 
 export interface AgentConfig {

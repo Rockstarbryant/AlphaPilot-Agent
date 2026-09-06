@@ -79,7 +79,7 @@ export default function DashboardPage() {
       </div>
 
       <Panel
-        title="Today's market session"
+        title="Latest market scan"
         action={
           <Button variant="ghost" onClick={runScan} disabled={scanning || !userId}>
             <span className="flex items-center gap-1.5">
@@ -92,7 +92,9 @@ export default function DashboardPage() {
         {loading ? (
           <EmptyState message="Loading…" />
         ) : session ? (
-          <div className="px-4 py-4 flex items-center gap-6 text-sm">
+          <div className="px-4 py-4 space-y-3">
+            <div className="text-xs text-muted">Runs automatically every hour across spot and futures markets — this button re-runs it now.</div>
+            <div className="flex items-center gap-6 text-sm">
             <div>
               <div className="text-xs text-muted mb-1">Started</div>
               <div className="tnum">{new Date(session.started_at).toLocaleString()}</div>
@@ -108,6 +110,7 @@ export default function DashboardPage() {
             <div>
               <div className="text-xs text-muted mb-1">Status</div>
               <StatusPill tone={session.status === "completed" ? "gain" : "watch"}>{session.status}</StatusPill>
+            </div>
             </div>
           </div>
         ) : (

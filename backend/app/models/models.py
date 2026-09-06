@@ -153,6 +153,12 @@ class MarketCandidate(Base):
     risk_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     score_breakdown: Mapped[dict] = mapped_column(JSON, default=dict)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # spot | futures — which Binance market this candidate was scanned from.
+    market_type: Mapped[str] = mapped_column(String, default="spot")
+    # Plain-language explanation for non-technical users, generated on demand
+    # by app/services/candidate_explainer.py (OpenRouter) and cached here so
+    # it isn't regenerated on every page load.
+    ai_explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     data_source_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -310,6 +316,27 @@ class AccountSnapshot(Base):
     realized_daily_loss_pct: Mapped[float] = mapped_column(Float, default=0.0)
     source: Mapped[str] = mapped_column(String, default="manual")  # manual | mcp_client_reported
     raw_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)  # full balances/positions payload as reported
+
+
+class ChatMessage(Base):
+    """
+    Copilot chat history (app/api/routes/agent_chat.py). Persisted so the
+    standalone Copilot page isn't stateless across reloads/sessions — each
+    row is one turn, ordered by created_at. tool_used/data let the frontend
+    show what AlphaPilot actually looked up for that answer, not just the
+    prose reply.
+    """
+    __tablename__ = "chat_messages"
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    role: Mapped[str] = mapped_column(String)  # user | assistant
+    content: Mapped[str] = mapped_column(Text)
+    tool_used: Mapped[str | None] = mapped_column(String, nullable=True)
+    tool_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True
+    )
 
 
 class Notification(Base):
