@@ -174,3 +174,4 @@ async def analyze_symbol(symbol: str, interval: str = "1h") -> CoinAnalysis:
         rationale=rationale,
         spot_guidance=spot_guidance,
         derivatives_guidance=derivatives_guidance,
+    )
