@@ -118,20 +118,43 @@ async def _save(db: AsyncSession, user_id: str, role: str, content: str, tool_us
 
 @router.get("/status")
 async def copilot_status():
-    """Lets the UI show whether the AI narration layer is actually
-    configured — deterministic tool answers work either way, but without
-    this a misconfigured OPENROUTER_MODEL silently degrades to canned text
-    with no visible signal."""
-    configured = bool(settings.openrouter_api_key and settings.openrouter_model)
-    return {
-        "ai_provider": settings.ai_provider,
-        "ai_configured": configured,
-        "note": None if configured else (
-            "OPENROUTER_API_KEY and/or OPENROUTER_MODEL are not set — Copilot will still answer "
-            "using deterministic analysis, but replies will use plain templated text instead of "
-            "AI-phrased language until this is configured."
-        ),
-    }
+    """
+    Whether AI narration is ACTUALLY working, not just configured — a set
+    but invalid OPENROUTER_API_KEY/OPENROUTER_MODEL previously reported
+    "online" here while every real reply silently fell back to templated
+    text, with no visible signal why. This does a real round-trip call.
+    """
+    if not settings.openrouter_api_key or not settings.openrouter_model:
+        return {
+            "ai_provider": settings.ai_provider,
+            "ai_configured": False,
+            "ai_working": False,
+            "note": "OPENROUTER_API_KEY and/or OPENROUTER_MODEL are not set — Copilot will still answer "
+                    "using deterministic analysis, but replies use plain templated text instead of "
+                    "AI-phrased language until this is configured.",
+        }
+    try:
+        provider = get_ai_provider()
+        result = await provider.analyze("Reply with exactly: OK", max_tokens=5)
+        return {
+            "ai_provider": settings.ai_provider,
+            "ai_configured": True,
+            "ai_working": True,
+            "model": result.model,
+            "note": None,
+        }
+    except AIProviderError as exc:
+        return {
+            "ai_provider": settings.ai_provider,
+            "ai_configured": True,
+            "ai_working": False,
+            "note": (
+                f"OPENROUTER_API_KEY/OPENROUTER_MODEL are set, but a live test call failed: {exc}. "
+                "Common causes: OPENROUTER_MODEL isn't a real model id (must include the provider "
+                "prefix, e.g. 'meta-llama/llama-3.1-8b-instruct:free'), the API key is invalid/expired, "
+                "or the account has no credit. Replies will use templated text until this is fixed."
+            ),
+        }
 
 
 @router.get("/{user_id}/history")
@@ -204,13 +227,17 @@ async def send_message(user_id: str, payload: ChatRequest, db: AsyncSession = De
         analysis = await analyze_symbol(symbol)
         data = analysis.__dict__
         reply, ai_used = await _narrate(
-            f"A user asked: \"{text}\" about {symbol}. Here is AlphaPilot's deterministic technical "
-            f"analysis — RSI, MACD, momentum, market regime, and a bias/confidence score. Explain it "
-            f"in plain, direct language and give a clear recommendation for spot buy-and-hold vs "
-            f"long/short vs waiting, grounded strictly in this data (never invent numbers not present "
-            f"here): {data}",
+            f"A user asked: \"{text}\" about {symbol}. Here is AlphaPilot's multi-factor analysis — "
+            f"technical indicators, market structure, volume, order book, derivatives positioning, "
+            f"on-chain, sentiment, and cross-market, combined into one composite bias/confidence. "
+            f"Explain it in plain, direct language, mention which categories actually had data "
+            f"({len(analysis.categories_used)}/8), and give a clear recommendation for spot "
+            f"buy-and-hold vs long/short vs waiting, grounded strictly in this data (never invent "
+            f"numbers not present here): {data}",
             fallback=(
-                f"{symbol}: bias {analysis.bias} ({analysis.confidence}% confidence). "
+                f"{symbol}: bias {analysis.bias} ({analysis.confidence}% confidence, based on "
+                f"{len(analysis.categories_used)}/8 analysis categories — missing: "
+                f"{', '.join(analysis.categories_missing) or 'none'}). "
                 f"{analysis.spot_guidance} {analysis.derivatives_guidance}"
             ),
         )

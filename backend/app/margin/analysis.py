@@ -42,6 +42,7 @@ class MarginAnalysis:
     interest_rate_is_estimate: bool
     est_daily_cost_pct_of_position: float
     notes: str
+    data_quality: str
 
 
 async def analyze_margin_symbol(
@@ -63,6 +64,12 @@ async def analyze_margin_symbol(
     reasons: list[str] = []
     eligible = True
 
+    if analysis.data_quality == "insufficient":
+        eligible = False
+        reasons.append(
+            f"AlphaPilot couldn't get enough live price history for {symbol} to analyze it right now "
+            "(a market-data gap, not a real signal) — try again shortly rather than trusting this result."
+        )
     if quote_volume < settings.min_quote_volume_24h_usdt * 3:
         eligible = False
         reasons.append("24h volume is below the 3x-of-spot-minimum liquidity floor margin requires.")
@@ -72,7 +79,7 @@ async def analyze_margin_symbol(
     if analysis.market_regime in (REGIME_RISK_OFF, REGIME_HIGH_VOLATILITY, REGIME_UNKNOWN):
         eligible = False
         reasons.append(f"Market regime '{analysis.market_regime}' disables new margin trades.")
-    if analysis.bias == "WAIT":
+    if analysis.bias == "WAIT" and analysis.data_quality != "insufficient":
         eligible = False
         reasons.append("No directional conviction from technical analysis — not worth paying borrow interest for.")
 
@@ -116,4 +123,5 @@ async def analyze_margin_symbol(
         interest_rate_is_estimate=rate_is_estimate,
         est_daily_cost_pct_of_position=est_daily_cost,
         notes=notes,
+        data_quality=analysis.data_quality,
     )

@@ -7,21 +7,25 @@ or redeems anything here either (same rule app/services/capital_optimizer.py
 already follows) — this module only *reads* flexible-product APY so
 AlphaPilot can recommend where idle capital could go.
 
-Binance's flexible-product list is served from
-``GET /sapi/v1/simple-earn/flexible/list`` on the *signed* SAPI host
-(api.binance.com), which historically requires an API-key header even for
-the "list" endpoint on some accounts, and is NOT reachable from the
-unauthenticated ``data-api.binance.vision`` mirror AlphaPilot otherwise uses
-for market data. AlphaPilot holds no Binance API key (see core/config.py),
-so this scanner calls the endpoint unauthenticated and degrades to a clear,
-empty-but-explained result if Binance rejects it — it must never invent APY
-figures. If your Binance account has a read-only API key available, set it
-via BINANCE_EARN_API_KEY and this module will send it as a plain header;
-no secret/signature is required for a read-only list call in that case.
+Binance's flexible-product list (``GET /sapi/v1/simple-earn/flexible/list``)
+is a SIGNED endpoint (security type USER_DATA) — unlike the plain public
+market-data endpoints this project otherwise uses, it requires a full
+HMAC-SHA256 signature over the query string (timestamp + recvWindow), not
+just an API-key header. An earlier version of this module assumed a bare
+API key would work and got a raw 400 back from Binance for every call. If
+you see "no API key" as the failure reason, both BINANCE_EARN_API_KEY and
+BINANCE_EARN_API_SECRET must be set — a key alone is not enough. Use a
+read-only key (no trading/withdrawal permission needed for Simple Earn read
+access) generated specifically for this; AlphaPilot never sends this
+secret anywhere except in the local HMAC computation below.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
+import time
 from dataclasses import dataclass
+from urllib.parse import urlencode
 
 import httpx
 
@@ -45,6 +49,16 @@ class EarnScanUnavailable(RuntimeError):
     pass
 
 
+def _signed_params(extra: dict) -> dict:
+    params = {**extra, "timestamp": int(time.time() * 1000), "recvWindow": 5000}
+    query = urlencode(params)
+    signature = hmac.new(
+        settings.binance_earn_api_secret.encode(), query.encode(), hashlib.sha256
+    ).hexdigest()
+    params["signature"] = signature
+    return params
+
+
 async def scan_earn_opportunities(quote_assets: tuple[str, ...] = ("USDT", "USDC", "BTC", "ETH")) -> dict:
     """
     Returns a dict with either populated ``opportunities`` (best APY first)
@@ -52,26 +66,42 @@ async def scan_earn_opportunities(quote_assets: tuple[str, ...] = ("USDT", "USDC
     callers must show the reason, never silently show an empty list as "no
     opportunities exist".
     """
-    headers = {}
     api_key = getattr(settings, "binance_earn_api_key", "") or ""
-    if api_key:
-        headers["X-MBX-APIKEY"] = api_key
+    api_secret = getattr(settings, "binance_earn_api_secret", "") or ""
+    if not api_key or not api_secret:
+        return {
+            "opportunities": [],
+            "unavailable_reason": (
+                "Binance's Simple Earn flexible-product list is a signed endpoint — it needs BOTH "
+                "BINANCE_EARN_API_KEY and BINANCE_EARN_API_SECRET set (a key alone isn't enough). "
+                "Generate a read-only Binance API key/secret pair (no trading or withdrawal permission "
+                "required) and set both env vars, or ask your connected AI client to read current APYs "
+                "from Binance Agent OS if it exposes an Earn tool."
+            ),
+        }
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(EARN_LIST_URL, headers=headers)
-        if resp.status_code == 401:
+            resp = await client.get(
+                EARN_LIST_URL,
+                params=_signed_params({}),
+                headers={"X-MBX-APIKEY": api_key},
+            )
+        if not resp.is_success:
+            # Any non-2xx here — 400 (bad/missing params), 401 (bad key),
+            # 403 (IP/permission) — means this call isn't working, and the
+            # specific Binance error code is more useful to the user than a
+            # generic message, so it's included rather than swallowed.
             return {
                 "opportunities": [],
                 "unavailable_reason": (
-                    "Binance requires an API key for the Simple Earn flexible-product list on this "
-                    "account. AlphaPilot holds no Binance API key by design (see core/config.py). "
-                    "Set BINANCE_EARN_API_KEY to a read-only key to enable this scan, or ask your "
-                    "connected AI client to read current APYs from Binance Agent OS if it exposes "
-                    "an Earn tool."
+                    f"Binance rejected the Simple Earn list request (HTTP {resp.status_code}): "
+                    f"{resp.text[:300]}. Double-check BINANCE_EARN_API_KEY/BINANCE_EARN_API_SECRET are a "
+                    "valid, currently-enabled key pair — Simple Earn read access does not require "
+                    "trading permission, but the key must still be active and IP-unrestricted (or your "
+                    "server's IP must be on the key's allowlist)."
                 ),
             }
-        resp.raise_for_status()
         raw = resp.json()
     except httpx.HTTPError as exc:
         return {"opportunities": [], "unavailable_reason": f"Binance Earn list request failed: {exc}"}

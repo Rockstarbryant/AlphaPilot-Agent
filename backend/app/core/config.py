@@ -72,8 +72,15 @@ class Settings(BaseSettings):
     mcp_client_name: str = Field(default="AlphaPilot Agent")
     # Optional read-only key for the Simple Earn flexible-product list scan
     # (app/earn/scanner.py). Never used for trading; AlphaPilot still never
-    # stores a Binance credential capable of moving funds.
+    # stores a Binance credential capable of moving funds. This is a SIGNED
+    # Binance endpoint — both the key AND secret are required, a key alone
+    # is not enough (an earlier version of this got that wrong).
     binance_earn_api_key: str = Field(default="")
+    binance_earn_api_secret: str = Field(default="")
+    # Optional providers for app/market/sentiment.py and app/market/cross_market.py —
+    # both categories degrade to "unavailable" (never faked) without a key.
+    cryptopanic_api_key: str = Field(default="")  # free signup: cryptopanic.com/developers/api/
+    alpha_vantage_api_key: str = Field(default="")  # free signup: alphavantage.co
     public_base_url: str = Field(default="http://localhost:8000")
     frontend_public_url: str = Field(default="http://localhost:3000")
 

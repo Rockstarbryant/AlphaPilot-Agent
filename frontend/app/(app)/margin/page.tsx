@@ -34,6 +34,12 @@ function SymbolMarginAnalyzer() {
         {error && <div className="text-xs text-loss">{error}</div>}
         {analysis && (
           <div className="border border-line rounded-sm p-3 space-y-2 text-sm">
+            {analysis.data_quality === "insufficient" && (
+              <div className="border border-loss/40 bg-loss/5 rounded-sm p-2 text-xs text-loss">
+                Not enough live price history came back from Binance for this symbol — this result isn't
+                reliable right now. This is a data availability issue, not a real signal. Try again shortly.
+              </div>
+            )}
             <div className="flex items-center justify-between">
               <span className="tnum font-medium">{analysis.symbol}</span>
               <StatusPill tone={analysis.eligible ? "gain" : "loss"}>

@@ -117,10 +117,19 @@ async def wiring_instructions() -> str:
 @server.tool()
 async def analyze_symbol(symbol: str, interval: str = "1h") -> dict:
     """
-    Momentum/RSI/MACD-based analysis for one symbol, e.g. "BTCUSDT" — answers
-    "what do you think about trading BTC/USDT, should I long or short, or
-    buy spot and hold?" Public Binance data only — works without any Binance
-    Agent OS connection.
+    Multi-factor analysis for one symbol, e.g. "BTCUSDT" — answers "what do
+    you think about trading BTC/USDT, should I long or short, or buy spot
+    and hold?" Combines technical indicators (RSI/MACD/EMA-SMA/Bollinger/
+    support-resistance), market structure (trend sequence, breaks of
+    structure), volume (VWAP, volume profile), order book (bid/ask
+    imbalance, walls), derivatives (funding rate, open interest, basis),
+    on-chain (chain TVL trend where applicable), sentiment (Fear & Greed +
+    optional news), and cross-market (BTC dominance, ETH/BTC, optional
+    macro) into one composite bias/confidence. The result always reports
+    `categories_used`/`categories_missing`/`coverage_pct` — relay that
+    coverage info, not just the bias, so the human knows how much of the
+    analysis actually had live data. Public data only — works without any
+    Binance Agent OS connection. See docs/ANALYSIS_ENGINE.md.
     """
     result = await _analyze_symbol(symbol, interval=interval)
     return result.__dict__

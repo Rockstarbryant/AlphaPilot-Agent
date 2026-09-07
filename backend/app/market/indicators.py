@@ -129,3 +129,159 @@ def compute_momentum(closes: list[float], lookback: int = 12) -> MomentumResult:
     roc = (end - start) / start * 100
     direction = "UP" if roc > 0.5 else "DOWN" if roc < -0.5 else "FLAT"
     return MomentumResult(roc_pct=round(roc, 2), direction=direction)
+
+
+def _sma(values: list[float], period: int) -> list[float]:
+    """Simple moving average series — shorter than ``values`` by ``period - 1``."""
+    if len(values) < period:
+        return []
+    return [sum(values[i - period + 1 : i + 1]) / period for i in range(period - 1, len(values))]
+
+
+@dataclass
+class MAResult:
+    sma_20: float | None
+    sma_50: float | None
+    ema_20: float | None
+    ema_50: float | None
+    price_vs_sma20_pct: float | None  # positive = price above the average
+    golden_cross: bool  # sma20 crossed above sma50 in the last few candles
+    death_cross: bool
+    trend: str  # UPTREND | DOWNTREND | SIDEWAYS | UNKNOWN
+
+
+def compute_moving_averages(closes: list[float]) -> MAResult:
+    """SMA/EMA 20 & 50, plus whether a golden/death cross just happened —
+    the classic 'is this a real trend or just noise' check."""
+    if len(closes) < 51:
+        return MAResult(None, None, None, None, None, False, False, "UNKNOWN")
+
+    sma20_series = _sma(closes, 20)
+    sma50_series = _sma(closes, 50)
+    ema20_series = _emas(closes, 20)
+    ema50_series = _emas(closes, 50)
+
+    sma20, sma50 = sma20_series[-1], sma50_series[-1]
+    ema20, ema50 = ema20_series[-1], ema50_series[-1]
+
+    # Look back a few candles on the SMA series (aligned to the shorter
+    # series' length) to catch a cross that happened recently, not just
+    # the instantaneous relationship.
+    n = min(len(sma20_series), len(sma50_series))
+    recent20 = sma20_series[-n:]
+    recent50 = sma50_series[-n:]
+    lookback = min(5, n - 1)
+    golden_cross = lookback > 0 and recent20[-1 - lookback] <= recent50[-1 - lookback] and recent20[-1] > recent50[-1]
+    death_cross = lookback > 0 and recent20[-1 - lookback] >= recent50[-1 - lookback] and recent20[-1] < recent50[-1]
+
+    price = closes[-1]
+    price_vs_sma20 = round((price - sma20) / sma20 * 100, 2) if sma20 else None
+
+    if sma20 > sma50 and price > sma20:
+        trend = "UPTREND"
+    elif sma20 < sma50 and price < sma20:
+        trend = "DOWNTREND"
+    else:
+        trend = "SIDEWAYS"
+
+    return MAResult(
+        sma_20=round(sma20, 6), sma_50=round(sma50, 6), ema_20=round(ema20, 6), ema_50=round(ema50, 6),
+        price_vs_sma20_pct=price_vs_sma20, golden_cross=golden_cross, death_cross=death_cross, trend=trend,
+    )
+
+
+@dataclass
+class BollingerResult:
+    upper: float | None
+    middle: float | None
+    lower: float | None
+    bandwidth_pct: float | None  # (upper-lower)/middle — squeeze detector
+    percent_b: float | None  # 0 = at lower band, 1 = at upper band, can exceed [0,1]
+    signal: str  # SQUEEZE | UPPER_BREAKOUT | LOWER_BREAKOUT | INSIDE | UNKNOWN
+
+
+def compute_bollinger_bands(closes: list[float], period: int = 20, num_std: float = 2.0) -> BollingerResult:
+    """Bollinger Bands — volatility envelope around a moving average.
+    A tight bandwidth ('squeeze') often precedes a big move; a close
+    outside the bands is a volatility breakout, not automatically a
+    reversal signal, so it's reported descriptively, not scored as
+    directional on its own."""
+    if len(closes) < period:
+        return BollingerResult(None, None, None, None, None, "UNKNOWN")
+
+    window = closes[-period:]
+    middle = sum(window) / period
+    variance = sum((c - middle) ** 2 for c in window) / period
+    std = variance ** 0.5
+    upper = middle + num_std * std
+    lower = middle - num_std * std
+    price = closes[-1]
+
+    bandwidth_pct = round((upper - lower) / middle * 100, 2) if middle else None
+    percent_b = round((price - lower) / (upper - lower), 3) if upper != lower else None
+
+    if bandwidth_pct is not None and bandwidth_pct < 4:
+        signal = "SQUEEZE"
+    elif price > upper:
+        signal = "UPPER_BREAKOUT"
+    elif price < lower:
+        signal = "LOWER_BREAKOUT"
+    else:
+        signal = "INSIDE"
+
+    return BollingerResult(
+        upper=round(upper, 6), middle=round(middle, 6), lower=round(lower, 6),
+        bandwidth_pct=bandwidth_pct, percent_b=percent_b, signal=signal,
+    )
+
+
+@dataclass
+class SupportResistanceResult:
+    support_levels: list[float]  # nearest first, below current price
+    resistance_levels: list[float]  # nearest first, above current price
+    nearest_support: float | None
+    nearest_resistance: float | None
+    distance_to_support_pct: float | None
+    distance_to_resistance_pct: float | None
+
+
+def compute_support_resistance(
+    highs: list[float], lows: list[float], closes: list[float], *, pivot_window: int = 3, max_levels: int = 3
+) -> SupportResistanceResult:
+    """
+    Fractal/pivot-based support & resistance: a candle is a swing high if
+    its high is the max within +/- pivot_window candles (swing low,
+    symmetric). This is the same logic a human chartist applies by eye —
+    deterministic, no lookahead (only pivots that are already fully formed,
+    i.e. not within pivot_window of the most recent candle, are used).
+    """
+    n = len(closes)
+    if n < pivot_window * 2 + 5:
+        return SupportResistanceResult([], [], None, None, None, None)
+
+    swing_highs, swing_lows = [], []
+    # Exclude the last `pivot_window` candles — a pivot there isn't
+    # confirmed yet (we can't see candles after it).
+    for i in range(pivot_window, n - pivot_window):
+        window_highs = highs[i - pivot_window : i + pivot_window + 1]
+        window_lows = lows[i - pivot_window : i + pivot_window + 1]
+        if highs[i] == max(window_highs):
+            swing_highs.append(highs[i])
+        if lows[i] == min(window_lows):
+            swing_lows.append(lows[i])
+
+    price = closes[-1]
+    resistance_levels = sorted({round(h, 6) for h in swing_highs if h > price})[:max_levels]
+    support_levels = sorted({round(l, 6) for l in swing_lows if l < price}, reverse=True)[:max_levels]
+
+    nearest_resistance = resistance_levels[0] if resistance_levels else None
+    nearest_support = support_levels[0] if support_levels else None
+
+    return SupportResistanceResult(
+        support_levels=support_levels,
+        resistance_levels=resistance_levels,
+        nearest_support=nearest_support,
+        nearest_resistance=nearest_resistance,
+        distance_to_support_pct=round((price - nearest_support) / price * 100, 2) if nearest_support else None,
+        distance_to_resistance_pct=round((nearest_resistance - price) / price * 100, 2) if nearest_resistance else None,
+    )

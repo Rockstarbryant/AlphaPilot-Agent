@@ -1,76 +1,46 @@
-# AlphaPilot Final Implementation Report
+# Implementation Report
 
-## Scope
+This repo has gone through two major pivots, both driven by the same fact:
+**Binance's Agent OS allowlist rejects self-built AI clients.**
 
-This report describes the repository after the direct Binance Agent OS refactor and frontend account-state pass.
+1. Original attempt: AlphaPilot as a direct Binance Agent OS OAuth client.
+   Abandoned — rejected on Binance's consent screen. See
+   `BINANCE_AGENT_OS_REFACTOR.md`.
+2. "Option A": AlphaPilot as a proposal-only workflow, execution via an
+   allowlisted AI client. Correct shape, but originally missing real
+   technical analysis, Earn/margin scanning, an account-context relay, and
+   a panic-question path.
+3. **Current state — the advisory refactor** (`docs/ADVISORY_REFACTOR.md`):
+   AlphaPilot is a Binance research and trading advisory. It analyzes
+   markets (RSI/MACD/momentum, both spot and futures, hourly), scans Earn
+   and margin opportunities, builds risk-validated proposals against a
+   relayed account balance, explains panic questions about open positions,
+   and offers a standalone OpenRouter-backed chat (Copilot) for users
+   without an MCP client set up. It still never executes anything itself.
 
-## Implemented
+## What's implemented and checked
 
-### Backend
+See `docs/VERIFICATION.md` for the specific, current list of what was
+actually verified (import checks, typecheck, build) versus what still needs
+a live deploy/Binance account to confirm.
 
-- Direct Binance Agent OS MCP client.
-- MCP initialize, tool discovery and tool invocation.
-- OAuth protected-resource discovery and PKCE helpers.
-- Encrypted OAuth credential persistence.
-- Binance connection model and migration.
-- Agent OS connection/capability/ticker/account routes.
-- Direct TradePlan execution endpoint.
-- Order-ID extraction and order-status reconciliation.
-- Position creation after confirmed fills.
-- Direct exit execution service.
-- Account-state snapshot synchronization.
-- Existing deterministic strategies/risk engine preserved.
-- AlphaPilot MCP server retained as an optional AlphaPilot data interface.
+## What's explicitly out of scope, permanently
 
-### Frontend
+- AlphaPilot completing Binance Agentic OAuth as its own client.
+- AlphaPilot placing or canceling a Binance order of any kind.
+- AlphaPilot storing a Binance API key, secret, or OAuth token.
 
-- Agent OS connection UI.
-- Agentic account-state panel.
-- Account balances and USDT availability.
-- Portfolio value display when explicitly returned.
-- Open-position/open-order indicators when returned.
-- Trading-mode controls.
-- Direct TradePlan execution button.
-- Dashboard account-state summary.
+These aren't gaps on a roadmap — see `docs/ADVISORY_REFACTOR.md` for why
+they're the permanent shape of this integration.
 
-## Verification performed for this archive
+## Honest known gaps
 
-### Static source verification
-
-- Python application/tests successfully passed `python -m compileall`.
-- Repository-wide search was performed to remove obsolete external-client hand-off architecture wording.
-- Backend and frontend source files were inspected for the direct execution/account-state paths.
-
-### Runtime verification not completed here
-
-The isolated environment did not have all repository runtime dependencies available. A full `pytest` collection attempt failed because packages such as `asyncpg`, `respx` and `mcp` were unavailable. Frontend dependency installation also timed out, so a fresh Next.js production build was not completed in this environment.
-
-Most importantly, **no live MCP OAuth authorization or real-money order was performed by this verification pass**.
-
-Therefore this report does not claim that the Binance-specific OAuth/tool schemas have been live verified.
-
-## Current debugging priority
-
-The first debugging target after extraction should be:
-
-```text
-1. Binance authorization
-2. tools/list
-3. account read
-4. ticker read
-5. inspect live tool schemas
-6. small execution test
-7. order reconciliation
-8. Position creation
-9. exit execution
-```
-
-The live tool catalog should be treated as the source of truth if its names or schemas differ from the generic adapter assumptions in `agent_os_mcp_client.py`.
-
-## Known technical gaps
-
-1. Legacy generic endpoints still need a full ownership/authentication audit.
-2. Account snapshot valuation is intentionally conservative rather than a complete portfolio mark-to-market engine.
-3. Margin/Convert/Futures execution workflows are not complete AlphaPilot features even though Binance Agent OS exposes those capabilities.
-4. Simple Earn remains recommendation-only.
-5. Live Binance Agent OS authentication/execution is not yet certified by this archive.
+- Futures analysis doesn't yet incorporate funding rate or open interest —
+  futures candidates are scored on the same signals as spot.
+- `analyze_symbol` (ad-hoc coin analysis) is spot-only; there's no
+  futures-specific analysis endpoint yet, only futures *scanning* for the
+  scheduled strategies.
+- The Simple Earn scanner's exact response-parsing was written against
+  Binance's documented shape, not a live response — see
+  `app/earn/scanner.py`'s docstring for its fallback behavior if that
+  assumption is wrong.

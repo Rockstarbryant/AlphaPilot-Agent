@@ -51,8 +51,9 @@ async def explain_candidate_plain_language(candidate_id: str, db: AsyncSession =
     candidate = await db.get(MarketCandidate, candidate_id)
     if candidate is None:
         raise HTTPException(404, "Candidate not found")
-    explanation = await explain_candidate(candidate)
-    if not candidate.ai_explanation:
+    already_cached = bool(candidate.ai_explanation)
+    explanation, ai_narrated = await explain_candidate(candidate)
+    if not already_cached and ai_narrated:
         candidate.ai_explanation = explanation
         await db.commit()
-    return {"candidate_id": candidate_id, "explanation": explanation}
+    return {"candidate_id": candidate_id, "explanation": explanation, "ai_narrated": ai_narrated}

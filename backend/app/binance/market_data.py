@@ -138,6 +138,17 @@ class BinanceMarketDataClient:
             return None
         return ((best_ask - best_bid) / mid) * 10_000
 
+    async def get_order_book(self, symbol: str, limit: int = 100) -> dict:
+        """Full order book snapshot — [price, quantity] pairs, best price
+        first on each side. `limit` can be 5/10/20/50/100/500/1000/5000 per
+        Binance's accepted depth-limit values; 100 is enough for imbalance/
+        wall detection without the heavier weight of the largest snapshots."""
+        raw = await self._get(self._depth_path, params={"symbol": symbol, "limit": limit})
+        return {
+            "bids": [[float(p), float(q)] for p, q in raw.get("bids", [])],
+            "asks": [[float(p), float(q)] for p, q in raw.get("asks", [])],
+        }
+
     async def get_klines(self, symbol: str, interval: str = "1h", limit: int = 24) -> list[dict]:
         raw = await self._get(
             self._klines_path, params={"symbol": symbol, "interval": interval, "limit": limit}
@@ -153,3 +164,38 @@ class BinanceMarketDataClient:
             }
             for row in raw
         ]
+
+    # --- Futures-only: derivatives data (app/market/derivatives.py) ---
+    # All three are public market-data endpoints (no API key needed) per
+    # Binance's futures docs — see docs/BINANCE_CAPABILITY_MATRIX.md.
+
+    async def get_premium_index(self, symbol: str) -> dict:
+        """Mark price + current funding rate + next funding time.
+        GET /fapi/v1/premiumIndex — futures only."""
+        if self.market_type != "futures":
+            raise ValueError("get_premium_index is only available for market_type='futures'.")
+        raw = await self._get("/fapi/v1/premiumIndex", params={"symbol": symbol})
+        return {
+            "mark_price": float(raw["markPrice"]),
+            "index_price": float(raw["indexPrice"]),
+            "last_funding_rate": float(raw["lastFundingRate"]),
+            "next_funding_time": int(raw["nextFundingTime"]),
+        }
+
+    async def get_funding_rate_history(self, symbol: str, limit: int = 24) -> list[dict]:
+        """GET /fapi/v1/fundingRate — futures only. Most recent `limit`
+        settlements (funding settles every 8h on Binance, so 24 rows is ~8 days)."""
+        if self.market_type != "futures":
+            raise ValueError("get_funding_rate_history is only available for market_type='futures'.")
+        raw = await self._get("/fapi/v1/fundingRate", params={"symbol": symbol, "limit": limit})
+        return [{"funding_time": int(r["fundingTime"]), "funding_rate": float(r["fundingRate"])} for r in raw]
+
+    async def get_open_interest(self, symbol: str) -> float | None:
+        """Current open interest in contracts. GET /fapi/v1/openInterest — futures only."""
+        if self.market_type != "futures":
+            raise ValueError("get_open_interest is only available for market_type='futures'.")
+        raw = await self._get("/fapi/v1/openInterest", params={"symbol": symbol})
+        try:
+            return float(raw["openInterest"])
+        except (KeyError, ValueError, TypeError):
+            return None

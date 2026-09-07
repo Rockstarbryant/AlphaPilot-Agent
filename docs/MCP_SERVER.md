@@ -1,84 +1,104 @@
-# MCP Architecture (Option A)
+# MCP Architecture
 
-AlphaPilot uses **two different MCP roles**. They must not be confused.
+AlphaPilot uses **two different MCP roles** in the dual-MCP workflow. They
+must not be confused — see `docs/ADVISORY_REFACTOR.md` for the full picture.
 
-## 1. Binance MCP — execution rail (allowlisted clients only)
+## 1. Binance Agent OS MCP — execution rail (allowlisted clients only)
 
 Endpoint: `https://agent.binance.com/mcp/agentic`
 
-Binance’s hosted MCP server. **OAuth is completed inside a supported AI client**, not inside AlphaPilot:
+Binance's hosted MCP server. **OAuth is completed inside a supported AI
+client**, never inside AlphaPilot:
 
-- Claude Code / Claude Desktop  
-- Cursor / VS Code  
-- Codex / ChatGPT  
-- Grok Bot  
+- Claude Code / Claude Desktop
+- Cursor / VS Code
+- Codex / ChatGPT
+- Grok Bot
 
-Self-built MCP clients (including AlphaPilot’s own OAuth attempt) currently receive:
+A self-built client (including an earlier AlphaPilot attempt — see
+`BINANCE_AGENT_OS_REFACTOR.md`) is rejected on the consent screen. AlphaPilot
+does not act as a Binance MCP OAuth client, full stop — not as a fallback,
+not as an optional mode.
 
-> The AI Agent you are using is not currently supported. `(3346001-…)`
+## 2. AlphaPilot MCP — analysis, proposals, and account-context relay
 
-So AlphaPilot **does not** act as a Binance MCP OAuth client for trading.
+`backend/app/mcp_server.py` (Streamable HTTP) exposes AlphaPilot-owned tools.
+It is **not** Binance and never places an exchange order.
 
-## 2. AlphaPilot MCP — policy & proposal workflow
-
-`backend/app/mcp_server.py` (Streamable HTTP) exposes AlphaPilot-owned data and workflow tools:
+### Advisory tools (public data — no Binance connection needed)
 
 | Tool | Purpose |
 |------|---------|
-| `wiring_instructions` | How to connect dual MCP |
-| `list_pending_proposals` | Risk-validated plans |
-| `get_trade_plan` | Structured plan |
-| `get_approval_brief` | Human-readable brief |
-| `approve_trade_plan` | Mark approved (no order) |
-| `reject_trade_plan` | Cancel plan |
-| `execution_checklist` | Steps for Binance-side order |
-| `record_fill` | After Binance fill → open Position |
-| `list_open_positions` | Monitored positions |
+| `wiring_instructions` | Full dual-MCP setup checklist |
+| `analyze_symbol(symbol, interval="1h")` | RSI/MACD/momentum + regime → long/short/hold bias, confidence, rationale |
+| `get_earn_opportunities()` | Simple Earn flexible-product APY scan |
+| `get_margin_analysis(symbol, daily_interest_rate_pct=None)` | Margin eligibility, suggested leverage, cost estimate |
 
-This server is **not** Binance and never places exchange orders.
+### Account-context relay
 
-## Option A dual-MCP flow
+| Tool | Purpose |
+|------|---------|
+| `submit_account_context(user_id, portfolio_value_usdt, open_exposure_usdt=0, margin_exposure_usdt=0, realized_daily_loss_pct=0)` | Relay a Binance balance you just read via Binance Agent OS MCP. Required before `build_trade_proposal`; stale after 10 minutes. |
+
+### Proposal / execution workflow
+
+| Tool | Purpose |
+|------|---------|
+| `build_trade_proposal(user_id, symbol, intent, requested_size_usdt=None, requested_leverage=None)` | Risk-validated size/leverage/stop/targets. `intent` is `long`, `short`, or `spot_hold`. |
+| `list_pending_proposals(user_id=None)` | Risk-validated plans (from either the proposal builder or scheduled strategies) |
+| `get_trade_plan(plan_id)` | Full structured plan |
+| `get_approval_brief(plan_id)` | Human-readable brief |
+| `approve_trade_plan(plan_id)` | Mark approved (no order placed) |
+| `reject_trade_plan(plan_id, reason=...)` | Cancel plan |
+| `execution_checklist(plan_id)` | Steps for placing the order via Binance Agent OS MCP |
+| `record_fill(plan_id, order_id, fill_price, quantity)` | After the Binance-side fill → opens a Position |
+| `list_open_positions(user_id=None)` | Positions AlphaPilot is monitoring |
+
+### Panic / exit
+
+| Tool | Purpose |
+|------|---------|
+| `explain_panic(position_id, question="")` | Re-runs analysis against current price; reports whether the original thesis still holds, distance to stop, recommendation |
+
+## Dual-MCP flow
 
 ```text
-User (desktop)
+User (any allowlisted AI client)
    │
-   ├─► Supported client ──OAuth──► Binance Agent OS MCP ──► Agentic sub-account
-   │         │                         (orders, account)
-   │         │
-   │         └──────────────────► AlphaPilot MCP
-   │                                   │
-   │                          proposals / approve / record_fill
-   │                                   │
-   └──────────────────────────► AlphaPilot Web UI / REST
-                                      │
-                               market scan (public REST)
-                               risk engine → TradePlan
+   ├─► Binance Agent OS MCP ──OAuth──► Agentic sub-account (balances, orders)
+   │
+   └─► AlphaPilot MCP
+             │
+     analyze_symbol / get_earn_opportunities / get_margin_analysis
+             │  (no Binance connection needed for the above)
+     submit_account_context ◄── relayed from what Binance Agent OS returned
+             │
+     build_trade_proposal → approve_trade_plan
+             │
+     [order placed via Binance Agent OS MCP directly]
+             │
+     record_fill → Position opened, monitored by AlphaPilot
+             │
+     explain_panic ◄── if the human asks "should I close this?"
 ```
-
-1. Market scan + strategies + risk run in AlphaPilot (public REST).  
-2. Operator reviews plans in UI or via AlphaPilot MCP.  
-3. `approve_trade_plan`.  
-4. Supported client places order on **Binance** MCP.  
-5. `record_fill` so AlphaPilot monitors the position.
 
 ## Running AlphaPilot MCP
 
 ```bash
-# env
 MCP_SERVER_HOST=0.0.0.0
 MCP_SERVER_PORT=9000
 DATABASE_URL=...
 
 python -m app.mcp_server
-# or Docker service alphapilot-mcp-server (see render.yaml)
+# or the alphapilot-mcp-server Docker service (see render.yaml)
 ```
 
-Add the Streamable HTTP URL to Claude Code / Cursor alongside Binance MCP.
+Add the Streamable HTTP URL to Claude Code / Cursor / etc. alongside
+Binance Agent OS MCP.
 
-## What was removed from the “happy path”
+## What's intentionally NOT here
 
-- AlphaPilot completing Binance Agentic OAuth as its own client  
-- Market data via Agent OS MCP without allowlisted OAuth  
-- Direct `execute_trade_plan` → Binance MCP as the only path  
-
-Legacy `BinanceAgentOSService` code may still exist for experiments; **Option A production path does not depend on it.**
+- AlphaPilot completing Binance Agentic OAuth as its own client — permanently
+  out of scope, not a "todo".
+- A `place_order`-style tool on AlphaPilot's MCP server — that tool belongs
+  to Binance Agent OS MCP, called by the allowlisted client directly.

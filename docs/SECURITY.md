@@ -2,80 +2,91 @@
 
 ## Security model
 
-The system has three independent control layers:
+Two independent control layers now, not three — see
+`docs/ADVISORY_REFACTOR.md`:
 
-1. **LLM reasoning** — can propose/explain; cannot define hard risk policy.
-2. **AlphaPilot Risk Engine** — deterministic application-side gate.
-3. **Binance Agent OS** — account permissions, Agentic sub-account boundary and Binance-side authorization/confirmation.
+1. **AlphaPilot Risk Engine** — deterministic, application-side gate on
+   every proposal (`app/risk/engine.py`). AI narration is downstream of it
+   and cannot alter its output.
+2. **Binance Agent OS** — account permissions, Agentic sub-account
+   boundary, and Binance-side confirmation of write actions, entirely
+   outside AlphaPilot, mediated by whichever allowlisted AI client the user
+   is running.
 
-A trade is allowed only when all three boundaries permit it.
+There is no "AlphaPilot connects to Binance" layer anymore — it was removed,
+not weakened, because it never worked (Binance's allowlist rejects
+self-built clients). See `BINANCE_AGENT_OS_REFACTOR.md`.
 
 ## Binance credentials
 
-AlphaPilot does not use Binance API-key/secret HMAC signing for the Agent OS path.
+**AlphaPilot stores no Binance credential of any kind** — no API key/secret,
+no OAuth token, nothing that could authenticate to Binance. There used to be
+Fernet-encrypted OAuth token storage (`MCP_OAUTH_ENCRYPTION_KEY`) for a
+direct-client attempt; that code and its DB table (`binance_connections`)
+are deleted, not just unused. The `cryptography` package was removed from
+`requirements.txt` as a result.
 
-The direct client is designed around the hosted Binance MCP authorization flow. OAuth access/refresh material, when obtained, is encrypted with a Fernet key before database persistence.
+What AlphaPilot does store: whatever balance/exposure numbers an AI client
+chooses to report via `submit_account_context` (`app/services/account_context.py`)
+— plain numbers, not credentials, timestamped and treated as stale after 10
+minutes.
 
-Environment variable:
+## Binance-side protections (external to AlphaPilot)
 
-`MCP_OAUTH_ENCRYPTION_KEY`
-
-Generate it with:
-
-```bash
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-```
-
-Never commit the key.
-
-## Important verification limitation
-
-The repository's OAuth implementation is standards-oriented, but a real Binance authorization has not been completed in this isolated environment. Therefore the security posture of the **implemented code** and the security guarantees of the **live Binance connection** must be distinguished until the first live smoke test succeeds.
-
-## Binance-side protections
-
-Binance's current Agent OS documentation states:
-
-- Agentic accounts are dedicated sub-accounts.
-- Users choose scopes.
-- Account scope can expose Agentic balances/positions.
-- Trade scope covers supported exchange products.
-- There is no withdrawal scope.
-- Transfers are restricted to wallets inside the Agentic sub-account.
-- Binance currently confirms write actions before execution.
-
-Reference: https://developers.binance.com/en/docs/agent-native/mcp-server/agentic
+Per Binance's own Agent OS documentation
+(https://developers.binance.com/en/docs/agent-native/mcp-server/agentic):
+Agentic accounts are dedicated sub-accounts, users choose scopes, there is
+no withdrawal scope, transfers are restricted to wallets inside the Agentic
+sub-account, and Binance confirms write actions before execution. All of
+this happens between the user, their AI client, and Binance directly —
+AlphaPilot is not in that path and can't weaken or bypass it.
 
 ## Application protections
 
-- JWT authentication.
-- Password hashing.
-- Parameterized SQLAlchemy queries.
-- CORS configuration.
-- Deterministic risk checks.
-- Idempotency key on TradePlans.
-- Order-status reconciliation.
-- Audit events.
-- Encrypted OAuth token persistence.
+- JWT authentication; a 401 (expired/invalid token) is handled globally by
+  the frontend — cleared session + redirect to `/login?expired=1`, never a
+  raw JSON error surfaced in a panel.
+- Password hashing, parameterized SQLAlchemy queries, CORS configuration.
+- Deterministic risk checks; idempotency key on TradePlans; audit events.
+- No Binance secrets anywhere in the codebase, by construction (there's
+  nothing to leak).
 - No secrets in frontend code.
 
 ## Order safety
 
-A network timeout is not treated as proof that an order failed. The execution service should reconcile order status before any retry.
-
-A Position is not created merely because an order request was issued. It requires a confirmed fill.
+AlphaPilot has no order to lose track of — the account placing the order
+(the allowlisted AI client) is responsible for its own retry/reconciliation
+logic against Binance. On AlphaPilot's side, a Position is created only
+after `confirm-execution` / `record_fill` is explicitly called with a
+reported order id and fill — never merely because a proposal existed.
 
 ## Emergency stop
 
-AlphaPilot's local emergency stop prevents new AlphaPilot proposals. Binance's own Emergency Stop is the authoritative account-level mechanism for disconnecting agents and cancelling Agentic-account orders/positions.
+AlphaPilot's local emergency stop (`POST /api/agent/{user_id}/emergency-stop`)
+prevents new AlphaPilot proposals only. Binance's own Emergency Stop is the
+authoritative account-level mechanism for disconnecting agents and
+cancelling Agentic-account orders/positions — a different system, external
+to AlphaPilot.
 
-## Known security gaps to address before public deployment
+## Known gaps to address before public deployment
 
-1. Audit all legacy user-scoped routes for ownership checks.
-2. Replace the development JWT default before deployment.
-3. Configure production CORS rather than relying on localhost.
-4. Add secret scanning to CI.
-5. Add rate limiting to sensitive Agent OS endpoints.
-6. Add CSRF protection if authentication ever moves from bearer tokens to cookies.
-7. Add prompt-injection isolation if external text/news/sentiment sources are introduced.
-8. Perform a live MCP OAuth and least-privilege scope test.
+1. Audit remaining user-scoped routes for ownership checks (most now use
+   `get_current_user` + an explicit `current_user.id != user_id` check —
+   verify any newly added route follows the same pattern).
+2. Replace the development `JWT_SECRET` default before deployment, and keep
+   it stable across redeploys — a regenerated secret invalidates every
+   existing session at once (see `docs/DEPLOYMENT.md`'s "Known operational
+   notes").
+3. Configure production CORS (`FRONTEND_PUBLIC_URL`) rather than relying on
+   localhost.
+4. Add secret scanning to CI — this repo previously had real-looking
+   secrets committed in `.env.example`; treat any repo history containing
+   that file as compromised and rotate those credentials regardless of code
+   changes.
+5. Add rate limiting to the account-context relay and Copilot endpoints —
+   both call out to external services (implicitly Binance-adjacent trust,
+   and OpenRouter respectively) and are unauthenticated-adjacent surface.
+6. Add CSRF protection if authentication ever moves from bearer tokens to
+   cookies.
+7. Add prompt-injection isolation if external text/news/sentiment sources
+   are introduced into the AI narration prompts.

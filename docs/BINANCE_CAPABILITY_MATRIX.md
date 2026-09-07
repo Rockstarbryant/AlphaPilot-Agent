@@ -1,39 +1,57 @@
 # Binance Agent OS Capability Matrix
 
-**Reference checked:** Binance Developer Docs, Binance MCP Server, last modified September 3, 2026.
-
 Official reference: https://developers.binance.com/en/docs/agent-native/mcp-server/agentic
 
-| Capability | Binance documentation | AlphaPilot implementation | Verification state |
+AlphaPilot's relationship to each Binance capability now falls into exactly
+one of three buckets — see `docs/ADVISORY_REFACTOR.md`:
+
+- **AlphaPilot implements this directly**, using Binance's *public,
+  unauthenticated* REST API — no Agent OS connection needed at all.
+- **AlphaPilot never implements this** — it's authenticated/write territory
+  that only exists on the far side of Binance Agent OS MCP, reachable only
+  by an allowlisted AI client, never by AlphaPilot's backend. This is a
+  permanent boundary, not a gap to close.
+- **Relayed** — AlphaPilot doesn't call Binance for it, but can *use* a
+  value an AI client reports after reading it from Binance Agent OS.
+
+| Capability | Bucket | AlphaPilot code | Notes |
 |---|---|---|---|
-| Hosted MCP endpoint | `https://agent.binance.com/mcp/agentic` | Configurable default in `Settings` | Endpoint documented; live AlphaPilot session not tested here |
-| Public market data | Tickers, order books, candles, funding | Existing REST scanner + Agent OS ticker adapter | Code path present; live Agent OS call not tested here |
-| Agentic account balance | Account scope | `/api/binance/account/{user_id}` + frontend account-state component | Code path present; live response not tested here |
-| Agentic positions | Account scope | Account-state parser + service | Code path present; live response shape must be validated |
-| Spot trading | Trade scope | Generic discovered-tool order execution | Code path present; live order not tested |
-| Margin trading | Trade scope | Capability available at Binance boundary; AlphaPilot margin execution remains incomplete | Not fully implemented |
-| Convert | Trade scope | Binance boundary supports it; AlphaPilot has no dedicated Convert workflow | Not implemented |
-| USDⓈ-M Futures | Trade scope | Binance boundary supports it; AlphaPilot's core execution is currently spot-shaped | Not implemented |
-| COIN-M Futures | Trade scope | Binance boundary supports it; AlphaPilot has no dedicated workflow | Not implemented |
-| Internal Agentic wallet transfers | Transfer scope | No AlphaPilot transfer workflow | Not implemented |
-| External withdrawals | No withdrawal scope | No withdrawal code | Binance says unavailable |
-| User confirmation | Binance says write actions are confirmed first | AlphaPilot does not bypass this | Binance-side boundary |
-| Autonomous mode | Binance documentation says users can configure more autonomous trading; exact account/client behavior depends on connection policy | `TradingMode.autonomous` exists | Must be tested with real Agent OS permissions |
-| MCP authorization | Binance Agent OS authenticates during first MCP connection | AlphaPilot implements protected-MCP discovery/PKCE and encrypted token persistence | Must be live-tested against the deployed Agent OS connection |
-| Dynamic client registration | Only used if protected-MCP metadata advertises it | Implemented as standard MCP authorization behavior | Must be verified against live metadata; AlphaPilot must not assume Binance-specific registration |
-| Order reconciliation | Binance order status tool expected | Implemented via discovered-tool adapter | Live tool name/response must be verified |
+| Spot public market data (ticker/exchangeInfo/depth/klines) | Implements directly | `app/binance/market_data.py` (`market_type="spot"`) | Powers scanning, `analyze_symbol`, regime detection |
+| USDⓈ-M Futures public market data | Implements directly | `app/binance/market_data.py` (`market_type="futures"`) | Same client, `fapi.binance.com` host; scheduled strategies now scan both |
+| Simple Earn flexible-product APY | Implements directly (read-only) | `app/earn/scanner.py` | Never subscribes/redeems — recommendation only |
+| Margin eligibility / leverage / cost estimate | Implements directly (analysis, not execution) | `app/margin/analysis.py` | Uses public data + `RiskPolicy` limits; doesn't place a margin trade |
+| Agentic account balance/positions | Relayed | `app/services/account_context.py` | Only via `submit_account_context`, reported by an AI client that read it from Binance Agent OS |
+| Spot trading (order placement) | Never implemented in AlphaPilot | — | Allowlisted AI client → Binance Agent OS MCP directly; AlphaPilot only receives the resulting fill via `record_fill`/`confirm-execution` |
+| Margin trading (order placement) | Never implemented in AlphaPilot | — | Same as above |
+| USDⓈ-M / COIN-M Futures trading (order placement) | Never implemented in AlphaPilot | — | Same as above |
+| Convert | Never implemented in AlphaPilot | — | No AlphaPilot workflow at all |
+| Internal Agentic wallet transfers | Never implemented in AlphaPilot | — | No AlphaPilot workflow |
+| External withdrawals | Not possible via Agent OS at all | — | Binance documents no withdrawal scope, full stop |
+| User confirmation on writes | External, Binance-side | — | AlphaPilot has no write path to bypass this on |
+| MCP authorization / OAuth | AlphaPilot has none | — | Deleted, not disabled — Binance's allowlist rejects self-built clients; see `BINANCE_AGENT_OS_REFACTOR.md` |
+| Order reconciliation | Relayed | `confirm-execution` / `record_fill` | Takes the order id/fill an AI client reports; AlphaPilot doesn't independently query Binance order status |
 
-## Important interpretation
+## Funding rate / open interest (futures)
 
-"Agent OS" is broader than one protocol. Binance's hosted MCP server currently exposes trading and market-data capabilities; other Agent OS capabilities can use other Binance surfaces. AlphaPilot's Track A scope should focus on the MCP-based market/account/execution workflow actually demonstrated.
+Not yet pulled into `app/binance/market_data.py` — futures candidates are
+currently scored on the same momentum/volume signals as spot, not a
+funding-aware model. Flagged in `docs/AGENT.md`'s known limitations.
 
 ## Security boundary
 
-Binance documents an isolated Agentic sub-account, user-selected scopes and no withdrawal scope. Funding the Agentic sub-account is a manual Binance-side action. AlphaPilot should never imply that its backend can pull funds from the user's main account.
+Binance documents an isolated Agentic sub-account, user-selected scopes,
+and no withdrawal scope. Funding the Agentic sub-account is a manual
+Binance-side action, entirely outside AlphaPilot. AlphaPilot's backend
+cannot move funds — it has no code path that could, by design.
 
 ## Verification labels
 
-- **Implemented:** code exists and has been statically checked.
-- **Protocol-ready:** code follows the intended MCP/OAuth shape but has not completed a live Binance smoke test.
-- **Live verified:** only use this label after an actual authorized Binance call has succeeded.
-- **Not implemented:** do not expose as a working AlphaPilot feature.
+- **Implemented and verified:** code exists, imports/compiles, and its
+  logic is exercised by this repo's own tests or has been manually run
+  against live public Binance endpoints during development.
+- **Relayed:** correct by construction (it's just storing a number), but
+  its *accuracy* depends entirely on what the reporting AI client actually
+  read from Binance — not independently verifiable by AlphaPilot.
+- **Never implemented:** not a roadmap item: AlphaPilot deliberately has no
+  code path here, and none should be added without revisiting the
+  architecture decision in `docs/ADVISORY_REFACTOR.md`.

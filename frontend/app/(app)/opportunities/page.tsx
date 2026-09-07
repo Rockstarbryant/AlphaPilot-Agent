@@ -54,7 +54,7 @@ export default function OpportunitiesPage() {
   const [plansBySymbol, setPlansBySymbol] = useState<Record<string, TradePlan>>({});
   const [loading, setLoading] = useState(true);
   const [explaining, setExplaining] = useState<string | null>(null);
-  const [explanations, setExplanations] = useState<Record<string, string>>({});
+  const [explanations, setExplanations] = useState<Record<string, { text: string; aiNarrated: boolean }>>({});
 
   function load() {
     setLoading(true);
@@ -73,15 +73,15 @@ export default function OpportunitiesPage() {
 
   async function explainSimply(candidate: MarketCandidate) {
     if (candidate.ai_explanation) {
-      setExplanations((e) => ({ ...e, [candidate.id]: candidate.ai_explanation! }));
+      setExplanations((e) => ({ ...e, [candidate.id]: { text: candidate.ai_explanation!, aiNarrated: true } }));
       return;
     }
     setExplaining(candidate.id);
     try {
       const result = await api.explainCandidate(candidate.id);
-      setExplanations((e) => ({ ...e, [candidate.id]: result.explanation }));
+      setExplanations((e) => ({ ...e, [candidate.id]: { text: result.explanation, aiNarrated: result.ai_narrated } }));
     } catch {
-      setExplanations((e) => ({ ...e, [candidate.id]: "Couldn't generate an explanation right now." }));
+      setExplanations((e) => ({ ...e, [candidate.id]: { text: "Couldn't generate an explanation right now.", aiNarrated: false } }));
     } finally {
       setExplaining(null);
     }
@@ -156,7 +156,12 @@ export default function OpportunitiesPage() {
                   {c.reason && <div className="mt-2 text-xs text-muted">{c.reason}</div>}
 
                   {explanations[c.id] ? (
-                    <div className="mt-2 text-sm border border-line rounded-sm p-2 bg-surface-raised">{explanations[c.id]}</div>
+                    <div className="mt-2 text-sm border border-line rounded-sm p-2 bg-surface-raised space-y-1">
+                      <div>{explanations[c.id].text}</div>
+                      {!explanations[c.id].aiNarrated && (
+                        <div className="text-[10px] text-muted italic">templated explanation — AI narration unavailable right now</div>
+                      )}
+                    </div>
                   ) : (
                     <button
                       onClick={() => explainSimply(c)}
