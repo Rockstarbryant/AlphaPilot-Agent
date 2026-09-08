@@ -100,10 +100,10 @@ class RiskPolicy(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), unique=True)
 
     max_spot_trade_usdt: Mapped[float] = mapped_column(Float, default=100.0)
-    max_spot_allocation_pct: Mapped[float] = mapped_column(Float, default=10.0)
-    max_margin_trade_usdt: Mapped[float] = mapped_column(Float, default=30.0)
-    max_margin_allocation_pct: Mapped[float] = mapped_column(Float, default=3.0)
-    max_leverage: Mapped[float] = mapped_column(Float, default=3.0)
+    max_spot_allocation_pct: Mapped[float] = mapped_column(Float, default=40.0)   # was 10.0
+    max_margin_trade_usdt: Mapped[float] = mapped_column(Float, default=500.0)    # was 30.0
+    max_margin_allocation_pct: Mapped[float] = mapped_column(Float, default=40.0) # was 3.0
+    max_leverage: Mapped[float] = mapped_column(Float, default=25.0)              # was 3.0
     max_daily_loss_pct: Mapped[float] = mapped_column(Float, default=5.0)
     max_slippage_bps: Mapped[float] = mapped_column(Float, default=50.0)
     min_opportunity_score: Mapped[float] = mapped_column(Float, default=65.0)

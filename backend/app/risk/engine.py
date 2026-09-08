@@ -125,7 +125,7 @@ class RiskEngine:
             exposure_pct = (projected_exposure / current_portfolio_value_usdt) * 100
             max_total_exposure_pct = (
                 self.policy.max_spot_allocation_pct + self.policy.max_margin_allocation_pct
-            ) * 3  # generous ceiling across many concurrent positions; tune via policy later
+            ) * 3
             if exposure_pct > max_total_exposure_pct:
                 result.fail(
                     "portfolio_exposure",
@@ -180,18 +180,13 @@ class RiskEngine:
             result.ok("max_slippage")
 
         # --- Minimum opportunity/recovery score gate ---
-        # Scheduled scanners (gainer/recovery/hot) use high floors (default 65)
-        # because they already pre-filter for strong setups.
-        # user_requested (chat-driven) uses analysis.confidence, which is a
-        # conservative |composite| * 100 scale (directional bias starts \~15).
-        # Applying the scanner floor of 65 made every chat proposal fail.
-        # Keep a modest floor so pure noise still fails, while mild-but-real
-        # directional signals can pass. Size/leverage are already scaled by
-        # confidence and capped by policy.
+        # Scheduled scanners keep the high bar (65).
+        # Chat-requested plans use analysis.confidence (directional starts \~15),
+        # so they get a matching lower floor.
         if intent.strategy == "recovery_hunter":
             score_floor = self.policy.min_recovery_score
         elif intent.strategy == "user_requested":
-            score_floor = 20.0  # allow moderate-confidence chat proposals
+            score_floor = 15.0
         else:
             score_floor = self.policy.min_opportunity_score
 

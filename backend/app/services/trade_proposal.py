@@ -40,8 +40,82 @@ from app.models.models import (
 from app.risk.engine import RiskEngine, TradeIntent
 from app.services.account_context import AccountContextStale, require_fresh_context
 
-DEFAULT_STOP_LOSS_PCT = -8.0
-DEFAULT_PROFIT_TARGETS_PCT = {"10": 0.5, "20": 0.5}
+# ---------------------------------------------------------------------------
+# Exchange practical minima (most USDT pairs)
+# ---------------------------------------------------------------------------
+MIN_SPOT_NOTIONAL_USDT = 5.0
+MIN_FUTURES_NOTIONAL_USDT = 5.0
+
+# Hard ceiling for chat-requested proposals (overrides low RiskPolicy defaults)
+CHAT_MAX_ALLOCATION_PCT = 40.0
+CHAT_MAX_LEVERAGE = 25.0
+
+# Stop-loss: never risk more than this fraction of the margin
+MAX_MARGIN_LOSS_PCT = 50.0
+
+
+def _confidence_to_allocation_pct(confidence: float) -> float:
+    """
+    Map confidence (0-100) → target portfolio allocation %.
+
+    15% conf → \~2.5%
+    30% conf → 5%
+    50% conf → \~15%
+    70% conf → 25%
+    100% conf → 40%
+    """
+    c = max(0.0, min(100.0, confidence))
+    if c <= 30:
+        # 0 → 30  maps to 1% → 5%
+        return 1.0 + (5.0 - 1.0) * (c / 30.0)
+    if c <= 70:
+        # 30 → 70 maps to 5% → 25%
+        return 5.0 + (25.0 - 5.0) * ((c - 30.0) / 40.0)
+    # 70 → 100 maps to 25% → 40%
+    return 25.0 + (40.0 - 25.0) * ((c - 70.0) / 30.0)
+
+
+def _confidence_to_leverage(confidence: float) -> float:
+    """
+    Map confidence (0-100) → leverage.
+
+    40% conf → \~10x
+    60% conf → \~18x
+    100% conf → 25x
+    """
+    c = max(0.0, min(100.0, confidence))
+    if c <= 40:
+        # 0 → 40 maps to 1x → 10x
+        return 1.0 + (10.0 - 1.0) * (c / 40.0)
+    # 40 → 100 maps to 10x → 25x
+    return 10.0 + (25.0 - 10.0) * ((c - 40.0) / 60.0)
+
+
+def _stop_loss_pct_for_leverage(leverage: float) -> float:
+    """
+    Price-move stop that risks at most MAX_MARGIN_LOSS_PCT of the margin.
+    loss_pct_of_margin ≈ |price_move_pct| * leverage
+    → |price_move_pct| = MAX_MARGIN_LOSS_PCT / leverage
+    """
+    if leverage <= 0:
+        return -8.0
+    return -round(MAX_MARGIN_LOSS_PCT / leverage, 2)
+
+
+def _take_profit_targets(confidence: float) -> dict[str, float]:
+    """
+    Scale take-profit distances with confidence.
+    Returns { "tp1_pct": weight, "tp2_pct": weight } style dict
+    compatible with existing TradePlan.profit_targets_pct.
+    """
+    c = max(0.0, min(100.0, confidence))
+    if c < 40:
+        # Conservative targets
+        return {"8": 0.5, "15": 0.5}
+    if c < 70:
+        return {"12": 0.5, "22": 0.5}
+    # High confidence — wider targets
+    return {"18": 0.5, "30": 0.5}
 
 
 class ProposalRejected(RuntimeError):
@@ -77,24 +151,96 @@ async def build_trade_proposal(
     analysis: CoinAnalysis = await analyze_symbol(symbol)
     is_margin = intent in ("long", "short")
     side = "BUY" if intent in ("long", "spot_hold") else "SELL"
+    confidence = max(0.0, float(analysis.confidence))
 
-    max_trade = policy.max_margin_trade_usdt if is_margin else policy.max_spot_trade_usdt
-    max_alloc_pct = policy.max_margin_allocation_pct if is_margin else policy.max_spot_allocation_pct
-    size_by_allocation = snapshot.portfolio_value_usdt * (max_alloc_pct / 100)
-    position_size_usdt = min(
-        requested_size_usdt or max_trade, max_trade, size_by_allocation
+    # ------------------------------------------------------------------
+    # 1. Confidence-scaled allocation %
+    # ------------------------------------------------------------------
+    target_alloc_pct = _confidence_to_allocation_pct(confidence)
+    # Cap at the higher of policy value or our chat ceiling
+    effective_max_alloc = max(
+        policy.max_margin_allocation_pct if is_margin else policy.max_spot_allocation_pct,
+        CHAT_MAX_ALLOCATION_PCT,
     )
-    position_size_usdt = max(0.0, round(position_size_usdt, 2))
+    target_alloc_pct = min(target_alloc_pct, effective_max_alloc)
 
+    size_by_confidence = snapshot.portfolio_value_usdt * (target_alloc_pct / 100.0)
+
+    # ------------------------------------------------------------------
+    # 2. Confidence-scaled leverage
+    # ------------------------------------------------------------------
     leverage = 1.0
     if is_margin:
-        confidence_scaled = 1 + (policy.max_leverage - 1) * (analysis.confidence / 100) * 0.5
-        leverage = round(min(requested_leverage or confidence_scaled, policy.max_leverage), 2)
+        lev_from_conf = _confidence_to_leverage(confidence)
+        effective_max_lev = max(policy.max_leverage, CHAT_MAX_LEVERAGE)
+        leverage = round(
+            min(requested_leverage or lev_from_conf, effective_max_lev),
+            2,
+        )
 
-    # Opportunity score doubles as the risk engine's score-floor gate for
-    # user-requested plans — an ad-hoc idea still has to clear the same bar
-    # a scheduled strategy would.
-    opportunity_score = analysis.confidence if analysis.confidence > 0 else 0.0
+    # ------------------------------------------------------------------
+    # 3. Position size (margin for futures, notional for spot)
+    # ------------------------------------------------------------------
+    max_trade = (
+        max(policy.max_margin_trade_usdt, snapshot.portfolio_value_usdt * 0.4)
+        if is_margin
+        else max(policy.max_spot_trade_usdt, snapshot.portfolio_value_usdt * 0.4)
+    )
+
+    position_size_usdt = min(
+        requested_size_usdt or size_by_confidence,
+        size_by_confidence,
+        max_trade,
+        snapshot.portfolio_value_usdt,  # never more than available
+    )
+
+    # ------------------------------------------------------------------
+    # 4. Enforce Binance minimum notional (make small accounts tradeable)
+    # ------------------------------------------------------------------
+    if is_margin:
+        notional = position_size_usdt * leverage
+        if notional < MIN_FUTURES_NOTIONAL_USDT and snapshot.portfolio_value_usdt > 0:
+            # Raise margin and/or leverage just enough to clear the floor
+            # Prefer raising leverage first (keeps margin small), then margin.
+            required_notional = MIN_FUTURES_NOTIONAL_USDT
+            # Try higher leverage first (up to our chat max)
+            needed_lev = required_notional / max(position_size_usdt, 1e-9)
+            if needed_lev <= CHAT_MAX_LEVERAGE:
+                leverage = round(min(max(leverage, needed_lev), CHAT_MAX_LEVERAGE), 2)
+                notional = position_size_usdt * leverage
+            # If still short, raise margin
+            if notional < required_notional:
+                needed_margin = required_notional / max(leverage, 1e-9)
+                if needed_margin <= snapshot.portfolio_value_usdt:
+                    position_size_usdt = round(needed_margin, 2)
+                else:
+                    # Account simply cannot meet exchange minimum
+                    position_size_usdt = 0.0
+    else:
+        # Spot
+        if position_size_usdt < MIN_SPOT_NOTIONAL_USDT:
+            if MIN_SPOT_NOTIONAL_USDT <= snapshot.portfolio_value_usdt:
+                position_size_usdt = MIN_SPOT_NOTIONAL_USDT
+            else:
+                position_size_usdt = 0.0
+
+    position_size_usdt = max(0.0, round(position_size_usdt, 2))
+
+    # ------------------------------------------------------------------
+    # 5. Stop-loss & take-profit (confidence / leverage aware)
+    # ------------------------------------------------------------------
+    if is_margin:
+        stop_loss_pct = _stop_loss_pct_for_leverage(leverage)
+    else:
+        # Spot: fixed conservative stop
+        stop_loss_pct = -8.0
+
+    profit_targets = _take_profit_targets(confidence)
+
+    # ------------------------------------------------------------------
+    # Opportunity score for risk engine
+    # ------------------------------------------------------------------
+    opportunity_score = confidence if confidence > 0 else 0.0
 
     now = datetime.now(timezone.utc)
     session_row = MarketSession(session_date=now, status="completed", completed_at=now)
@@ -111,7 +257,12 @@ async def build_trade_proposal(
         quote_volume_24h=0.0,
         spread_bps=0.0,
         opportunity_score=opportunity_score,
-        score_breakdown={"confidence": analysis.confidence, "bias": analysis.bias},
+        score_breakdown={
+            "confidence": analysis.confidence,
+            "bias": analysis.bias,
+            "target_alloc_pct": round(target_alloc_pct, 2),
+            "leverage": leverage,
+        },
         reason="; ".join(analysis.rationale),
         data_source_timestamp=now,
     )
@@ -122,6 +273,9 @@ async def build_trade_proposal(
         f"user_requested:{user_id}:{symbol}:{intent}:{now.isoformat()}".encode()
     ).hexdigest()
 
+    # ------------------------------------------------------------------
+    # Risk engine validation
+    # ------------------------------------------------------------------
     engine = RiskEngine(policy)
     trade_intent = TradeIntent(
         symbol=symbol,
@@ -129,7 +283,7 @@ async def build_trade_proposal(
         position_size_usdt=position_size_usdt,
         entry_price=analysis.price,
         estimated_slippage_bps=0.0,
-        stop_loss_pct=DEFAULT_STOP_LOSS_PCT,
+        stop_loss_pct=stop_loss_pct,
         opportunity_score=opportunity_score,
         is_margin=is_margin,
         leverage=leverage,
@@ -146,6 +300,16 @@ async def build_trade_proposal(
         emergency_halted=False,
     )
 
+    # Extra explicit rejection when we could not meet exchange minimum
+    if position_size_usdt <= 0:
+        risk_result.passed = False
+        risk_result.fail(
+            "min_notional",
+            f"Account too small to meet Binance minimum notional "
+            f"(\~{MIN_FUTURES_NOTIONAL_USDT if is_margin else MIN_SPOT_NOTIONAL_USDT} USDT) "
+            f"under current balance and risk limits.",
+        )
+
     trade_plan = TradePlan(
         candidate_id=candidate.id,
         user_id=user_id,
@@ -155,15 +319,22 @@ async def build_trade_proposal(
         entry_price=analysis.price,
         position_size_usdt=position_size_usdt,
         estimated_slippage_bps=0.0,
-        stop_loss_pct=DEFAULT_STOP_LOSS_PCT,
-        profit_targets_pct=DEFAULT_PROFIT_TARGETS_PCT,
+        stop_loss_pct=stop_loss_pct,
+        profit_targets_pct=profit_targets,
         opportunity_score=opportunity_score,
         risk_score=100.0 - len([c for c in risk_result.checks.values() if not c]) * 15,
-        reason=f"Chat-requested {intent} on {symbol}. Bias={analysis.bias} ({analysis.confidence}%). "
-        + "; ".join(analysis.rationale),
+        reason=(
+            f"Chat-requested {intent} on {symbol}. "
+            f"Bias={analysis.bias} ({analysis.confidence}%). "
+            f"Alloc={target_alloc_pct:.1f}%, Lev={leverage}x. "
+            + "; ".join(analysis.rationale)
+        ),
         market_conditions={
-            "rsi": analysis.rsi, "macd": analysis.macd, "momentum": analysis.momentum,
+            "rsi": analysis.rsi,
+            "macd": analysis.macd,
+            "momentum": analysis.momentum,
             "regime": analysis.market_regime,
+            "target_alloc_pct": round(target_alloc_pct, 2),
         },
         risk_check_passed=risk_result.passed,
         risk_check_notes=risk_result.notes,
@@ -171,12 +342,20 @@ async def build_trade_proposal(
         status="proposed" if risk_result.passed else "risk_rejected",
     )
     db.add(trade_plan)
-    candidate.status = CandidateStatus.trade_proposed if risk_result.passed else CandidateStatus.rejected
-    db.add(AuditEvent(
-        user_id=user_id, strategy="user_requested", action="trade_plan_created",
-        asset=symbol, decision="proposed" if risk_result.passed else "risk_rejected",
-        risk_result=risk_result.notes, status="ok",
-    ))
+    candidate.status = (
+        CandidateStatus.trade_proposed if risk_result.passed else CandidateStatus.rejected
+    )
+    db.add(
+        AuditEvent(
+            user_id=user_id,
+            strategy="user_requested",
+            action="trade_plan_created",
+            asset=symbol,
+            decision="proposed" if risk_result.passed else "risk_rejected",
+            risk_result=risk_result.notes,
+            status="ok",
+        )
+    )
     await db.commit()
     await db.refresh(trade_plan)
 
@@ -190,8 +369,9 @@ async def build_trade_proposal(
         "suggested_margin_usdt": position_size_usdt,
         "suggested_leverage": leverage if is_margin else None,
         "reference_entry_price": analysis.price,
-        "stop_loss_pct": DEFAULT_STOP_LOSS_PCT,
-        "take_profit_targets_pct": DEFAULT_PROFIT_TARGETS_PCT,
+        "stop_loss_pct": stop_loss_pct,
+        "take_profit_targets_pct": profit_targets,
+        "target_allocation_pct": round(target_alloc_pct, 2),
         "risk_check_passed": risk_result.passed,
         "risk_check_notes": risk_result.notes,
         "bias": analysis.bias,
