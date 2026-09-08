@@ -14,7 +14,7 @@ export class SessionExpiredError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, {
+  const res = await fetch(`\( {API_URL} \){path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
@@ -76,13 +76,13 @@ export const api = {
     if (params?.status) qs.set("status", params.status);
     if (params?.strategy) qs.set("strategy", params.strategy);
     const query = qs.toString();
-    return request<MarketCandidate[]>(`/api/candidates/${query ? `?${query}` : ""}`);
+    return request<MarketCandidate[]>(`/api/candidates/\( {query ? `? \){query}` : ""}`);
   },
   explainCandidate: (candidateId: string) =>
     request<{ candidate_id: string; explanation: string; ai_narrated: boolean }>(`/api/candidates/${candidateId}/explain`, { method: "POST" }),
 
   listTradePlans: (status?: string) =>
-    request<TradePlan[]>(`/api/trade-plans/${status ? `?status=${status}` : ""}`),
+    request<TradePlan[]>(`/api/trade-plans/\( {status ? `?status= \){status}` : ""}`),
   getApprovalBrief: (planId: string) =>
     request<{ plan_id: string; brief: string }>(`/api/trade-plans/${planId}/approval-brief`),
   confirmExecution: (planId: string, binanceOrderId: string, fillPrice?: number, filledQuantity?: number) =>
@@ -96,7 +96,7 @@ export const api = {
     request<{ exit_signals_generated: number }>("/api/positions/monitor/run", { method: "POST" }),
   listExitSignals: (acknowledged?: boolean) =>
     request<ExitSignal[]>(
-      `/api/positions/exit-signals${acknowledged !== undefined ? `?acknowledged=${acknowledged}` : ""}`
+      `/api/positions/exit-signals\( {acknowledged !== undefined ? `?acknowledged= \){acknowledged}` : ""}`
     ),
   confirmExitExecution: (id: string, binanceOrderId: string, fillPrice?: number) =>
     request<any>(`/api/positions/exit-signals/${id}/confirm-execution`, {
@@ -133,7 +133,7 @@ export const api = {
     request<AccountContext>(`/api/binance/account-context/${userId}`),
 
   analyzeSymbol: (symbol: string, interval = "1h") =>
-    request<CoinAnalysis>(`/api/market/analyze/${symbol}?interval=${interval}`),
+    request<CoinAnalysis>(`/api/market/analyze/\( {symbol}?interval= \){interval}`),
   getEarnOpportunities: () => request<EarnScanResult>(`/api/market/earn`),
   getMarginAnalysis: (symbol: string) => request<MarginAnalysis>(`/api/market/margin/${symbol}`),
   createTradeProposal: (
@@ -145,7 +145,7 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   getPanicExplanation: (positionId: string, question = "") =>
-    request<PanicExplanation>(`/api/market/panic/${positionId}?question=${encodeURIComponent(question)}`),
+    request<PanicExplanation>(`/api/market/panic/\( {positionId}?question= \){encodeURIComponent(question)}`),
 
   sendAgentChatMessage: (userId: string, message: string, positionId?: string) =>
     request<AgentChatResponse>(`/api/agent-chat/${userId}/message`, {
@@ -158,7 +158,7 @@ export const api = {
     request<{ ai_provider: string; ai_configured: boolean; ai_working: boolean; model?: string; note: string | null }>(`/api/agent-chat/status`),
 
   listNotifications: (userId: string, unreadOnly = false) =>
-    request<Notification[]>(`/api/notifications/${userId}?unread_only=${unreadOnly}`),
+    request<Notification[]>(`/api/notifications/\( {userId}?unread_only= \){unreadOnly}`),
   markNotificationRead: (id: string) =>
     request(`/api/notifications/${id}/read`, { method: "POST" }),
   markAllNotificationsRead: (userId: string) =>
@@ -173,6 +173,16 @@ export const api = {
     request<CapitalEvaluation>("/api/capital/evaluate", {
       method: "POST",
       body: JSON.stringify(payload),
+    }),
+
+  // --- Risk policy (editable from the Risk page) ---
+  getRiskPolicy: (userId: string) =>
+    request<RiskPolicy>(`/api/risk/${userId}`),
+
+  updateRiskPolicy: (userId: string, patch: Partial<Omit<RiskPolicy, "user_id">>) =>
+    request<RiskPolicy>(`/api/risk/${userId}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
     }),
 };
 
@@ -470,4 +480,22 @@ export interface Notification {
   title: string;
   detail: string;
   read: boolean;
+}
+
+export interface RiskPolicy {
+  user_id: string;
+  max_spot_trade_usdt: number;
+  max_spot_allocation_pct: number;
+  max_margin_trade_usdt: number;
+  max_margin_allocation_pct: number;
+  max_leverage: number;
+  max_daily_loss_pct: number;
+  max_slippage_bps: number;
+  min_opportunity_score: number;
+  min_recovery_score: number;
+  hot_score_threshold: number;
+  gainer_hard_stop_pct: number;
+  recovery_hard_stop_pct: number;
+  recovery_take_profit_pct: number;
+  trading_reserve_pct: number;
 }

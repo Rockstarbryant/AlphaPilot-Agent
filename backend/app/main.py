@@ -5,7 +5,7 @@ from slowapi.errors import RateLimitExceeded
 
 from app.api.routes import (
     account, agent, agent_chat, auth, binance, candidates, capital, market,
-    notifications, positions, sessions, trade_plans,
+    notifications, positions, sessions, trade_plans,risk,
 )
 from app.core.config import get_settings
 
@@ -35,6 +35,7 @@ app.include_router(agent_chat.router, prefix="/api/agent-chat", tags=["agent-cha
 app.include_router(capital.router, prefix="/api/capital", tags=["capital"])
 app.include_router(account.router, prefix="/api/account", tags=["account"])
 app.include_router(notifications.router, prefix="/api/notifications", tags=["notifications"])
+app.include_router(risk.router, prefix="/api/risk", tags=["risk"])
 
 
 @app.get("/api/health")
