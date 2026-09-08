@@ -1,11 +1,47 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, Copy, Check } from "lucide-react";
 import { api, MarketSession, TradePlan } from "@/lib/api";
 import { Panel, Stat, StatusPill, Button, EmptyState } from "@/components/ui";
 import { useUserId } from "@/lib/use-user";
 import { AccountState } from "@/components/account-state";
+
+function UserIdBanner({ userId }: { userId: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(userId);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // clipboard API unavailable (e.g. no HTTPS) — selection fallback below still works
+    }
+  }
+
+  return (
+    <Panel>
+      <div className="px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
+        <div className="min-w-0">
+          <div className="text-xs text-muted mb-1">Your user ID — needed to report account context to AlphaPilot</div>
+          <code
+            className="tnum text-sm text-gold break-all select-all cursor-text"
+            title="Click to select, or use the Copy button"
+          >
+            {userId}
+          </code>
+        </div>
+        <Button variant="ghost" onClick={copy}>
+          <span className="flex items-center gap-1.5">
+            {copied ? <Check size={13} className="text-gain" /> : <Copy size={13} />}
+            {copied ? "Copied" : "Copy"}
+          </span>
+        </Button>
+      </div>
+    </Panel>
+  );
+}
 
 export default function DashboardPage() {
   const userId = useUserId();
@@ -61,6 +97,8 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-5">
+      {userId && <UserIdBanner userId={userId} />}
+
       {userId && <AccountState userId={userId} compact />}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
