@@ -69,14 +69,21 @@ export const api = {
     }),
   listSessions: () => request<MarketSession[]>("/api/sessions/"),
 
-  listCandidates: (params?: { sessionId?: string; marketType?: "spot" | "futures"; status?: string; strategy?: string }) => {
+  listCandidates: (params?: {
+    sessionId?: string;
+    marketType?: "spot" | "futures";
+    status?: string;
+    strategy?: string;
+  }) => {
     const qs = new URLSearchParams();
     if (params?.sessionId) qs.set("session_id", params.sessionId);
     if (params?.marketType) qs.set("market_type", params.marketType);
     if (params?.status) qs.set("status", params.status);
     if (params?.strategy) qs.set("strategy", params.strategy);
     const query = qs.toString();
-    return request<MarketCandidate[]>(`/api/candidates/\( {query ? `? \){query}` : ""}`);
+    return request<MarketCandidate[]>(
+      query ? `/api/candidates/?${query}` : "/api/candidates/"
+    );
   },
   explainCandidate: (candidateId: string) =>
     request<{ candidate_id: string; explanation: string; ai_narrated: boolean }>(`/api/candidates/${candidateId}/explain`, { method: "POST" }),
