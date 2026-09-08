@@ -7,6 +7,10 @@ must not be confused — see `docs/ADVISORY_REFACTOR.md` for the full picture.
 
 Endpoint: `https://agent.binance.com/mcp/agentic`
 
+Binance: `https://agent.binance.com/mcp/agentic`
+
+AlphaPilot: `https://alphapilot-mcp-server.onrender.com/mcp`
+
 Binance's hosted MCP server. **OAuth is completed inside a supported AI
 client**, never inside AlphaPilot:
 
