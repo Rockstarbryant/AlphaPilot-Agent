@@ -3,7 +3,7 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 function authHeaders(): Record<string, string> {
   if (typeof window === "undefined") return {};
   const token = window.localStorage.getItem("alphapilot_token");
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  return token ? { Authorization: "Bearer " + token } : {};
 }
 
 export class SessionExpiredError extends Error {
@@ -14,7 +14,7 @@ export class SessionExpiredError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`\( {API_URL} \){path}`, {
+  const res = await fetch(API_URL + path, {
     ...init,
     headers: {
       "Content-Type": "application/json",
@@ -23,9 +23,6 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (res.status === 401) {
-    // A stale/expired JWT should never surface as raw "{"detail":"Invalid or
-    // expired token"}" JSON in the UI — clear it and send the whole app back
-    // to login in one place instead of every caller handling this itself.
     if (typeof window !== "undefined") {
       window.localStorage.removeItem("alphapilot_token");
       window.localStorage.removeItem("alphapilot_user_id");
@@ -42,9 +39,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       const parsed = JSON.parse(body);
       detail = parsed.detail ?? body;
     } catch {
-      // body wasn't JSON — use it as-is
+      // body wasn't JSON
     }
-    throw new Error(typeof detail === "string" ? detail : `${res.status} ${res.statusText}`);
+    throw new Error(typeof detail === "string" ? detail : res.status + " " + res.statusText);
   }
   return res.json() as Promise<T>;
 }
@@ -57,6 +54,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ email, password }),
     }),
+
   login: (email: string, password: string) =>
     request<{ access_token: string; user_id: string }>("/api/auth/login", {
       method: "POST",
@@ -64,9 +62,11 @@ export const api = {
     }),
 
   runMarketScan: (userId: string) =>
-    request<{ session_id: string; gainers_scanned: number }>(`/api/sessions/run?user_id=${userId}`, {
-      method: "POST",
-    }),
+    request<{ session_id: string; gainers_scanned: number }>(
+      "/api/sessions/run?user_id=" + encodeURIComponent(userId),
+      { method: "POST" }
+    ),
+
   listSessions: () => request<MarketSession[]>("/api/sessions/"),
 
   listCandidates: (params?: {
@@ -85,92 +85,160 @@ export const api = {
     return request<MarketCandidate[]>(path);
   },
 
+  explainCandidate: (candidateId: string) =>
+    request<{ candidate_id: string; explanation: string; ai_narrated: boolean }>(
+      "/api/candidates/" + candidateId + "/explain",
+      { method: "POST" }
+    ),
+
   listTradePlans: (status?: string) => {
     const path = status
       ? "/api/trade-plans/?status=" + encodeURIComponent(status)
       : "/api/trade-plans/";
     return request<TradePlan[]>(path);
   },
+
   getApprovalBrief: (planId: string) =>
-    request<{ plan_id: string; brief: string }>(`/api/trade-plans/${planId}/approval-brief`),
-  confirmExecution: (planId: string, binanceOrderId: string, fillPrice?: number, filledQuantity?: number) =>
-    request(`/api/trade-plans/${planId}/confirm-execution`, {
+    request<{ plan_id: string; brief: string }>(
+      "/api/trade-plans/" + planId + "/approval-brief"
+    ),
+
+  confirmExecution: (
+    planId: string,
+    binanceOrderId: string,
+    fillPrice?: number,
+    filledQuantity?: number
+  ) =>
+    request("/api/trade-plans/" + planId + "/confirm-execution", {
       method: "POST",
-      body: JSON.stringify({ binance_order_id: binanceOrderId, fill_price: fillPrice, filled_quantity: filledQuantity }),
+      body: JSON.stringify({
+        binance_order_id: binanceOrderId,
+        fill_price: fillPrice,
+        filled_quantity: filledQuantity,
+      }),
     }),
 
   listPositions: () => request<Position[]>("/api/positions/"),
-  runPositionMonitor: () =>
-    request<{ exit_signals_generated: number }>("/api/positions/monitor/run", { method: "POST" }),
-  listExitSignals: (acknowledged?: boolean) =>
-    request<ExitSignal[]>(
-      `/api/positions/exit-signals\( {acknowledged !== undefined ? `?acknowledged= \){acknowledged}` : ""}`
-    ),
-  confirmExitExecution: (id: string, binanceOrderId: string, fillPrice?: number) =>
-    request<any>(`/api/positions/exit-signals/${id}/confirm-execution`, {
-      method: "POST",
-      body: JSON.stringify({ binance_order_id: binanceOrderId, fill_price: fillPrice }),
-    }),
-  acknowledgeExitSignal: (id: string) =>
-    request(`/api/positions/exit-signals/${id}/acknowledge`, { method: "POST" }),
 
-  getAgentConfig: (userId: string) => request<AgentConfig>(`/api/agent/${userId}`),
+  runPositionMonitor: () =>
+    request<{ exit_signals_generated: number }>("/api/positions/monitor/run", {
+      method: "POST",
+    }),
+
+  listExitSignals: (acknowledged?: boolean) => {
+    const path =
+      acknowledged !== undefined
+        ? "/api/positions/exit-signals?acknowledged=" + String(acknowledged)
+        : "/api/positions/exit-signals";
+    return request<ExitSignal[]>(path);
+  },
+
+  confirmExitExecution: (id: string, binanceOrderId: string, fillPrice?: number) =>
+    request("/api/positions/exit-signals/" + id + "/confirm-execution", {
+      method: "POST",
+      body: JSON.stringify({
+        binance_order_id: binanceOrderId,
+        fill_price: fillPrice,
+      }),
+    }),
+
+  acknowledgeExitSignal: (id: string) =>
+    request("/api/positions/exit-signals/" + id + "/acknowledge", {
+      method: "POST",
+    }),
+
+  getAgentConfig: (userId: string) =>
+    request<AgentConfig>("/api/agent/" + userId),
+
   setTradingMode: (userId: string, mode: string) =>
-    request<AgentConfig>(`/api/agent/${userId}/trading-mode`, {
+    request<AgentConfig>("/api/agent/" + userId + "/trading-mode", {
       method: "POST",
       body: JSON.stringify({ trading_mode: mode }),
     }),
-  emergencyStop: (userId: string, reason: string) =>
-    request<{ halted: boolean; note: string }>(`/api/agent/${userId}/emergency-stop`, {
-      method: "POST",
-      body: JSON.stringify({ reason }),
-    }),
-  resumeAgent: (userId: string) =>
-    request<AgentConfig>(`/api/agent/${userId}/resume`, { method: "POST" }),
 
-  // AlphaPilot cannot connect to Binance Agent OS itself (not on Binance's
-  // agent allowlist — see BINANCE_AGENT_OS_REFACTOR.md). Whichever AI client
-  // the user is chatting with reads their real balance from Binance Agent OS
-  // and reports it here so AlphaPilot's risk engine has real numbers.
+  emergencyStop: (userId: string, reason: string) =>
+    request<{ halted: boolean; note: string }>(
+      "/api/agent/" + userId + "/emergency-stop",
+      {
+        method: "POST",
+        body: JSON.stringify({ reason }),
+      }
+    ),
+
+  resumeAgent: (userId: string) =>
+    request<AgentConfig>("/api/agent/" + userId + "/resume", {
+      method: "POST",
+    }),
+
   submitAccountContext: (userId: string, payload: AccountContextPayload) =>
     request<{ ok: boolean; reported_at: string; portfolio_value_usdt: number }>(
-      `/api/binance/account-context/${userId}`,
+      "/api/binance/account-context/" + userId,
       { method: "POST", body: JSON.stringify(payload) }
     ),
+
   getAccountContext: (userId: string) =>
-    request<AccountContext>(`/api/binance/account-context/${userId}`),
+    request<AccountContext>("/api/binance/account-context/" + userId),
 
   analyzeSymbol: (symbol: string, interval = "1h") =>
-    request<CoinAnalysis>(`/api/market/analyze/\( {symbol}?interval= \){interval}`),
-  getEarnOpportunities: () => request<EarnScanResult>(`/api/market/earn`),
-  getMarginAnalysis: (symbol: string) => request<MarginAnalysis>(`/api/market/margin/${symbol}`),
+    request<CoinAnalysis>(
+      "/api/market/analyze/" + symbol + "?interval=" + encodeURIComponent(interval)
+    ),
+
+  getEarnOpportunities: () => request<EarnScanResult>("/api/market/earn"),
+
+  getMarginAnalysis: (symbol: string) =>
+    request<MarginAnalysis>("/api/market/margin/" + symbol),
+
   createTradeProposal: (
     userId: string,
-    payload: { symbol: string; intent: "long" | "short" | "spot_hold"; requested_size_usdt?: number; requested_leverage?: number }
+    payload: {
+      symbol: string;
+      intent: "long" | "short" | "spot_hold";
+      requested_size_usdt?: number;
+      requested_leverage?: number;
+    }
   ) =>
-    request<TradeProposalResult>(`/api/market/proposal/${userId}`, {
+    request<TradeProposalResult>("/api/market/proposal/" + userId, {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+
   getPanicExplanation: (positionId: string, question = "") =>
-    request<PanicExplanation>(`/api/market/panic/\( {positionId}?question= \){encodeURIComponent(question)}`),
+    request<PanicExplanation>(
+      "/api/market/panic/" +
+        positionId +
+        "?question=" +
+        encodeURIComponent(question)
+    ),
 
   sendAgentChatMessage: (userId: string, message: string, positionId?: string) =>
-    request<AgentChatResponse>(`/api/agent-chat/${userId}/message`, {
+    request<AgentChatResponse>("/api/agent-chat/" + userId + "/message", {
       method: "POST",
       body: JSON.stringify({ message, position_id: positionId }),
     }),
+
   getChatHistory: (userId: string) =>
-    request<ChatHistoryMessage[]>(`/api/agent-chat/${userId}/history`),
+    request<ChatHistoryMessage[]>("/api/agent-chat/" + userId + "/history"),
+
   getCopilotStatus: () =>
-    request<{ ai_provider: string; ai_configured: boolean; ai_working: boolean; model?: string; note: string | null }>(`/api/agent-chat/status`),
+    request<{
+      ai_provider: string;
+      ai_configured: boolean;
+      ai_working: boolean;
+      model?: string;
+      note: string | null;
+    }>("/api/agent-chat/status"),
 
   listNotifications: (userId: string, unreadOnly = false) =>
-    request<Notification[]>(`/api/notifications/\( {userId}?unread_only= \){unreadOnly}`),
+    request<Notification[]>(
+      "/api/notifications/" + userId + "?unread_only=" + String(unreadOnly)
+    ),
+
   markNotificationRead: (id: string) =>
-    request(`/api/notifications/${id}/read`, { method: "POST" }),
+    request("/api/notifications/" + id + "/read", { method: "POST" }),
+
   markAllNotificationsRead: (userId: string) =>
-    request(`/api/notifications/${userId}/read-all`, { method: "POST" }),
+    request("/api/notifications/" + userId + "/read-all", { method: "POST" }),
 
   evaluateCapital: (payload: {
     user_id: string;
@@ -183,12 +251,14 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
-  // --- Risk policy (editable from the Risk page) ---
   getRiskPolicy: (userId: string) =>
-    request<RiskPolicy>(`/api/risk/${userId}`),
+    request<RiskPolicy>("/api/risk/" + userId),
 
-  updateRiskPolicy: (userId: string, patch: Partial<Omit<RiskPolicy, "user_id">>) =>
-    request<RiskPolicy>(`/api/risk/${userId}`, {
+  updateRiskPolicy: (
+    userId: string,
+    patch: Partial<Omit<RiskPolicy, "user_id">>
+  ) =>
+    request<RiskPolicy>("/api/risk/" + userId, {
       method: "PATCH",
       body: JSON.stringify(patch),
     }),
@@ -302,69 +372,115 @@ export interface CoinAnalysis {
   interval: string;
   price: number;
   price_change_pct_24h: number;
-
   rsi: { value: number | null; period: number; signal: string };
-  macd: { macd: number | null; signal_line: number | null; histogram: number | null; crossover: string };
+  macd: {
+    macd: number | null;
+    signal_line: number | null;
+    histogram: number | null;
+    crossover: string;
+  };
   momentum: { roc_pct: number | null; direction: string };
   moving_averages: {
-    sma_20: number | null; sma_50: number | null; ema_20: number | null; ema_50: number | null;
-    price_vs_sma20_pct: number | null; golden_cross: boolean; death_cross: boolean; trend: string;
+    sma_20: number | null;
+    sma_50: number | null;
+    ema_20: number | null;
+    ema_50: number | null;
+    price_vs_sma20_pct: number | null;
+    golden_cross: boolean;
+    death_cross: boolean;
+    trend: string;
   };
   bollinger: {
-    upper: number | null; middle: number | null; lower: number | null;
-    bandwidth_pct: number | null; percent_b: number | null; signal: string;
+    upper: number | null;
+    middle: number | null;
+    lower: number | null;
+    bandwidth_pct: number | null;
+    percent_b: number | null;
+    signal: string;
   };
   support_resistance: {
-    support_levels: number[]; resistance_levels: number[];
-    nearest_support: number | null; nearest_resistance: number | null;
-    distance_to_support_pct: number | null; distance_to_resistance_pct: number | null;
+    support_levels: number[];
+    resistance_levels: number[];
+    nearest_support: number | null;
+    nearest_resistance: number | null;
+    distance_to_support_pct: number | null;
+    distance_to_resistance_pct: number | null;
   };
-
   structure: {
-    sequence: string; last_swing_high: number | null; last_swing_low: number | null;
-    break_of_structure: string | null; change_of_character: string | null; notes: string;
+    sequence: string;
+    last_swing_high: number | null;
+    last_swing_low: number | null;
+    break_of_structure: string | null;
+    change_of_character: string | null;
+    notes: string;
   };
-
-  vwap: { vwap: number | null; price_vs_vwap_pct: number | null; signal: string };
+  vwap: {
+    vwap: number | null;
+    price_vs_vwap_pct: number | null;
+    signal: string;
+  };
   volume_profile: {
-    point_of_control: number | null; value_area_low: number | null; value_area_high: number | null;
-    price_vs_poc_pct: number | null; signal: string;
+    point_of_control: number | null;
+    value_area_low: number | null;
+    value_area_high: number | null;
+    price_vs_poc_pct: number | null;
+    signal: string;
   };
-
   order_book: {
-    spread_bps: number | null; bid_depth_usdt: number; ask_depth_usdt: number;
-    imbalance_ratio: number | null; imbalance_signal: string;
+    spread_bps: number | null;
+    bid_depth_usdt: number;
+    ask_depth_usdt: number;
+    imbalance_ratio: number | null;
+    imbalance_signal: string;
     large_bid_walls: { price: number; qty: number; usdt_value: number }[];
     large_ask_walls: { price: number; qty: number; usdt_value: number }[];
     notes: string;
   };
-
   derivatives: {
-    available: boolean; funding_rate_pct: number | null; funding_rate_annualized_pct: number | null;
-    funding_trend: string; open_interest: number | null; basis_pct: number | null;
-    positioning_signal: string; liquidation_data: string; notes: string;
+    available: boolean;
+    funding_rate_pct: number | null;
+    funding_rate_annualized_pct: number | null;
+    funding_trend: string;
+    open_interest: number | null;
+    basis_pct: number | null;
+    positioning_signal: string;
+    liquidation_data: string;
+    notes: string;
   };
-
   onchain: {
-    applicable: boolean; chain: string | null; tvl_usd: number | null; tvl_change_7d_pct: number | null;
-    signal: string; whale_flow_data: string; notes: string;
+    applicable: boolean;
+    chain: string | null;
+    tvl_usd: number | null;
+    tvl_change_7d_pct: number | null;
+    signal: string;
+    whale_flow_data: string;
+    notes: string;
   };
-
-  fear_greed: { value: number | null; classification: string; signal: string; unavailable_reason: string | null };
+  fear_greed: {
+    value: number | null;
+    classification: string;
+    signal: string;
+    unavailable_reason: string | null;
+  };
   news_sentiment: {
-    available: boolean; headline_count: number; bullish_count: number; bearish_count: number;
-    top_headlines: string[]; unavailable_reason: string | null;
+    available: boolean;
+    headline_count: number;
+    bullish_count: number;
+    bearish_count: number;
+    top_headlines: string[];
+    unavailable_reason: string | null;
   };
-
   cross_market: {
-    btc_dominance_pct: number | null; total_market_cap_usd: number | null;
-    eth_btc_ratio: number | null; eth_btc_signal: string; macro_available: boolean;
-    dxy_note: string | null; notes: string;
+    btc_dominance_pct: number | null;
+    total_market_cap_usd: number | null;
+    eth_btc_ratio: number | null;
+    eth_btc_signal: string;
+    macro_available: boolean;
+    dxy_note: string | null;
+    notes: string;
   };
-
   market_regime: string;
   regime_notes: string;
-
   bias: "LONG" | "SHORT" | "WAIT";
   confidence: number;
   composite_score: number;
@@ -373,7 +489,6 @@ export interface CoinAnalysis {
   coverage_pct: number;
   model_type: string;
   rationale: string[];
-
   spot_guidance: string;
   derivatives_guidance: string;
   data_quality: "full" | "partial" | "insufficient";
