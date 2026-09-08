@@ -81,15 +81,16 @@ export const api = {
     if (params?.status) qs.set("status", params.status);
     if (params?.strategy) qs.set("strategy", params.strategy);
     const query = qs.toString();
-    return request<MarketCandidate[]>(
-      query ? `/api/candidates/?${query}` : "/api/candidates/"
-    );
+    const path = query ? "/api/candidates/?" + query : "/api/candidates/";
+    return request<MarketCandidate[]>(path);
   },
-  explainCandidate: (candidateId: string) =>
-    request<{ candidate_id: string; explanation: string; ai_narrated: boolean }>(`/api/candidates/${candidateId}/explain`, { method: "POST" }),
 
-  listTradePlans: (status?: string) =>
-    request<TradePlan[]>(`/api/trade-plans/\( {status ? `?status= \){status}` : ""}`),
+  listTradePlans: (status?: string) => {
+    const path = status
+      ? "/api/trade-plans/?status=" + encodeURIComponent(status)
+      : "/api/trade-plans/";
+    return request<TradePlan[]>(path);
+  },
   getApprovalBrief: (planId: string) =>
     request<{ plan_id: string; brief: string }>(`/api/trade-plans/${planId}/approval-brief`),
   confirmExecution: (planId: string, binanceOrderId: string, fillPrice?: number, filledQuantity?: number) =>
